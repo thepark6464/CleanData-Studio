@@ -45,6 +45,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="CleanData API",
         version="1.0.0",
         description="Messy data in. Clean data out. Shared deterministic CSV & XLSX cleaning API.",
+        docs_url="/api/docs",
+        openapi_url="/api/openapi.json",
+        redoc_url="/api/redoc",
     )
     app.state.settings = cfg
     app.state.storage = LocalPrivateStorage(cfg.storage_dir)
@@ -94,12 +97,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
-    app.include_router(health.router)
-    app.include_router(account.router)
-    app.include_router(billing.router)
-    app.include_router(api_keys.router)
-    app.include_router(files.router)
-    app.include_router(jobs.router)
+    # All public API endpoints share the /api prefix for the single-domain deployment.
+    app.include_router(health.router, prefix="/api")
+    app.include_router(account.router, prefix="/api")
+    app.include_router(billing.router, prefix="/api")
+    app.include_router(api_keys.router, prefix="/api")
+    app.include_router(files.router, prefix="/api")
+    app.include_router(jobs.router, prefix="/api")
     return app
 
 
