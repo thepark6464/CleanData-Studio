@@ -33,7 +33,7 @@ export class CleanDataApiError extends Error {
 
 export function getApiBaseUrl(): string {
   const configured = import.meta.env.VITE_API_BASE_URL as string | undefined;
-  return (configured ?? '').trim().replace(/\/+$/, '');
+  return (configured ?? '/api').trim().replace(/\/+$/, '');
 }
 
 async function handleJsonResponse<T>(resp: Response): Promise<T> {
@@ -71,7 +71,7 @@ export class CleanDataApiClient {
       throw new CleanDataApiError(
         0,
         'API_NOT_CONFIGURED',
-        'VITE_API_BASE_URL is not configured. Start the FastAPI backend locally (e.g. http://localhost:8000) and set VITE_API_BASE_URL.',
+        'API base URL is not configured. Set VITE_API_BASE_URL to your local backend URL for local development, or use /api for the deployed same-domain backend.',
       );
     }
   }
