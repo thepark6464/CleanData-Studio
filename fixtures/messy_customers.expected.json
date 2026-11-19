@@ -1,0 +1,12 @@
+{
+  "description": "Golden expected output for messy_customers.csv with default operations (dayFirst: true, YYYY-MM-DD, trim+collapseInternal, normalize_emails, remove_empty_rows, remove_duplicates keep=first, formulaProtection=true)",
+  "rowsBefore": 8,
+  "rowsAfter": 6,
+  "emptyRowsRemoved": 1,
+  "duplicatesRemoved": 1,
+  "formulaCellsEscaped": 3,
+  "headers": ["Full Name", "Email Address", "Signup Date", "Order Total", "Notes"],
+  "expectedFirstRow": ["Alice Johnson", "alice.johnson@example.com", "2025-03-15", "120.50", "VIP customer"],
+  "expectedSecondRowDayFirst": ["Bob Smith", "bob.smith@example.com", "2025-04-03", "", "Returned item"],
+  "expectedFormulaNoteCells": ["'=CMD('calc')", "'+1+1 formula risk", "'@SUM(A1:A2)"]
+}

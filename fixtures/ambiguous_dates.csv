@@ -1,0 +1,5 @@
+customer_id,order_date,amount
+1,03/04/2025,100
+2,15/04/2025,200
+3,2025-05-01,300
+4,invalid_date,400

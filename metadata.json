@@ -1,0 +1,8 @@
+{
+  "name": "CleanData Studio",
+  "description": "Privacy-conscious CSV cleaning and data quality validation workbench. Messy data in. Clean data out.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

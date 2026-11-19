@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CleanData Studio | Clean messy spreadsheets before import</title>
+    <meta
+      name="description"
+      content="Inspect messy CSV and Excel files, resolve ambiguous dates, verify emails and phones, and export safe datasets in your browser or via REST API."
+    />
+    <meta property="og:title" content="CleanData Studio | Clean messy spreadsheets before import" />
+    <meta
+      property="og:description"
+      content="Inspect messy CSV and Excel files, resolve ambiguous dates, verify emails and phones, and export safe datasets in your browser or via REST API."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CleanData Studio" />
+    <meta property="og:image" content="/og-card.svg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CleanData Studio | Clean messy spreadsheets before import" />
+    <meta
+      name="twitter:description"
+      content="Inspect messy CSV and Excel files, resolve ambiguous dates, verify emails and phones, and export safe datasets in your browser or via REST API."
+    />
+    <meta name="twitter:image" content="/og-card.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "CleanData Studio",
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "All",
+        "description": "Deterministic spreadsheet and CSV data cleaning workbench with local browser execution up to 5 MB and a shared REST API.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "INR"
+        }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Do files under 5 MB leave my browser?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. In Studio mode, files up to 5 MB are parsed, cleaned, scored, and exported entirely in browser memory with zero network upload."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How are ambiguous dates like 03/04/2025 handled?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Ambiguous numeric dates are never guessed silently. You choose day first or month first explicitly before normalization runs."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What protects exported files from spreadsheet formula injection?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Formula protection is enabled by default and neutralizes leading equals, plus, minus, at, tab, and carriage return triggers across CSV and XLSX exports."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How are API credits calculated and spent?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "One credit covers up to 1,000 rows processed on the server API. Monthly subscription credits are always deducted before purchased credit packs, which remain valid for 12 months."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How long are uploaded files kept on CleanData servers?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Raw server uploads expire and delete after 24 hours. Cleaned server download artifacts expire after 7 days."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does CleanData train AI models on customer spreadsheets?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. Cleaning runs through deterministic parsing and validation rules with zero AI model training on customer files."
+            }
+          }
+        ]
+      }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased selection:bg-blue-100 selection:text-blue-950">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

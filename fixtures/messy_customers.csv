@@ -1,0 +1,9 @@
+Full Name,Email Address,Signup Date,Order Total,Notes
+"  Alice  Johnson ",ALICE.JOHNSON@EXAMPLE.COM,15/03/2025,120.50,VIP customer
+Bob Smith,bob.smith@example.com,03/04/2025,,Returned item
+,,,,
+"  Alice  Johnson ",ALICE.JOHNSON@EXAMPLE.COM,15/03/2025,120.50,VIP customer
+Carol Lee,carol.lee@invalid,2025-03-20,89.00,=CMD('calc')
+Dave Patel,dave@company.org,22-03-2025,-45.00,+1+1 formula risk
+Eve Adams,eve.adams@example.com,not-a-date,N/A,@SUM(A1:A2)
+Frank Miller,frank@example.com,04 Mar 2025,210.00,Standard order

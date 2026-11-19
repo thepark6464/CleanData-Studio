@@ -1,0 +1,294 @@
+openapi: 3.1.0
+info:
+  title: CleanData API
+  version: 1.0.0
+  description: >
+    Shared deterministic CSV and XLSX cleaning REST API. Supports separate upload
+    or inline multipart cleaning, idempotent job submission, transparent quality
+    reports, short-lived signed downloads, atomic INR credit accounting, and
+    Pro/Business cd_live_ API key authentication.
+servers:
+  - url: http://localhost:8000
+    description: Local FastAPI development server
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Supabase JWT access token or Pro/Business API key (cd_live_...)
+paths:
+  /health:
+    get:
+      summary: Service health check
+      responses:
+        "200":
+          description: Healthy
+  /health/metrics:
+    get:
+      summary: Non-PII operational service counters
+      responses:
+        "200":
+          description: Uptime, job completion/failure counters, and active uploads
+  /v1/files/upload:
+    post:
+      summary: Upload dataset (multipart) and validate encoding, delimiter, and structure
+      security:
+        - {}
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Uploaded file metadata
+        "413":
+          description: File size exceeds limit
+        "415":
+          description: Unsupported or binary content
+        "422":
+          description: Malformed CSV or XLSX
+  /v1/clean:
+    post:
+      summary: Create a cleaning job using file_id or inline multipart file
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                file_id:
+                  type: string
+                operations:
+                  type: string
+                  description: JSON array of OperationRequest objects or comma-separated operation IDs
+                output_format:
+                  type: string
+                  enum: [csv, xlsx]
+                  default: csv
+                formula_protection:
+                  type: boolean
+                  default: true
+                delimiter_override:
+                  type: string
+      responses:
+        "200":
+          description: Cleaning job created
+        "400":
+          description: Missing input
+        "402":
+          description: Insufficient credits
+        "429":
+          description: Rate limit exceeded
+  /v1/jobs:
+    get:
+      summary: List cleaning jobs (paginated)
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Paginated list of jobs
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get job status and summary
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job status
+        "404":
+          description: Job not found
+  /v1/jobs/{job_id}/report:
+    get:
+      summary: Get transparent validation and cleaning report
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cleaning report
+  /v1/jobs/{job_id}/download:
+    get:
+      summary: Issue short-lived signed download URL
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Signed download URL metadata
+  /v1/account/me:
+    get:
+      summary: Inspect current authenticated Supabase user claims
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Authenticated user details
+        "401":
+          description: Missing or invalid JWT
+  /v1/account/delete-request:
+    post:
+      summary: Record account and personal data deletion request
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: Deletion request recorded
+  /v1/billing/summary:
+    get:
+      summary: Get active plan, credit wallet, and recent payment records
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Billing summary
+  /v1/billing/checkout:
+    post:
+      summary: Create a Razorpay checkout order for a subscription plan or credit pack
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, item_name]
+              properties:
+                kind:
+                  type: string
+                  enum: [credit_pack, subscription]
+                item_name:
+                  type: string
+      responses:
+        "200":
+          description: Checkout order initialized
+  /v1/webhooks/payments:
+    post:
+      summary: Verify and process signed Razorpay / payment webhook events idempotently
+      responses:
+        "200":
+          description: Webhook verified and applied
+        "401":
+          description: Invalid webhook signature
+  /v1/api-keys:
+    get:
+      summary: List API key metadata (never returns plaintext secrets or hashes)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: API keys list
+    post:
+      summary: Generate a new cd_live_ API key (Pro and Business plans only)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+      responses:
+        "200":
+          description: Plaintext key returned once with key metadata
+        "403":
+          description: Plan does not include API access
+  /v1/api-keys/{key_id}:
+    delete:
+      summary: Revoke an existing API key owned by the user
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: API key revoked
+        "404":
+          description: Key not found
+  /v1/usage:
+    get:
+      summary: Inspect current rate limit tier and recent API key usage logs
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: API usage summary
+  /v1/credits:
+    get:
+      summary: Inspect active plan and subscription vs. purchased credit balances
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Credit wallet balance

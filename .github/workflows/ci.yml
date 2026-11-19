@@ -1,0 +1,66 @@
+name: CleanData CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend Lint, Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify no server secrets leaked into client bundle
+        run: |
+          if grep -rnE 'SUPABASE_SERVICE_ROLE_KEY|SUPABASE_JWT_SECRET|API_KEY_PEPPER|DOWNLOAD_SIGNING_SECRET|PAYMENT_KEY_SECRET|PAYMENT_WEBHOOK_SECRET|VITE_.*SECRET' src/ index.html; then
+            echo "ERROR: Server-only secret identifier found in frontend source."
+            exit 1
+          fi
+
+      - name: TypeScript check
+        run: npm run lint
+
+      - name: Run Vitest unit & golden fixture tests
+        run: npm test
+
+      - name: Build production Vite bundle
+        run: npm run build
+
+  backend:
+    name: Backend Compile & Pytest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Syntax check backend Python modules
+        run: find backend -name "*.py" -print0 | xargs -0 python3 -m py_compile
+
+      - name: Run FastAPI pytest suite
+        working-directory: backend
+        run: pytest -v

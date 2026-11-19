@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Allow: /cleaner
+Allow: /pricing
+Allow: /developers
+Allow: /privacy
+Allow: /terms
+Disallow: /auth
+Disallow: /dashboard
+Disallow: /dashboard/
+
+Sitemap: /sitemap.xml
