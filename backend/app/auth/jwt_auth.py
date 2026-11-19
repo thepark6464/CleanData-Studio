@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from functools import lru_cache
+
 import jwt
 from fastapi import Request
 
@@ -16,19 +18,52 @@ class AuthenticatedUser:
     rate_limit_per_min: int | None = None
 
 
-def verify_supabase_jwt(token: str, jwt_secret: str) -> AuthenticatedUser:
-    if not jwt_secret:
-        raise ApiServiceError(
-            500,
-            "AUTH_NOT_CONFIGURED",
-            "SUPABASE_JWT_SECRET is not configured on the backend server.",
-        )
+@lru_cache(maxsize=4)
+def _jwks_client(jwks_url: str) -> jwt.PyJWKClient:
+    return jwt.PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=300)
+
+
+def verify_supabase_jwt(
+    token: str, jwt_secret: str, supabase_url: str
+) -> AuthenticatedUser:
     try:
+        header = jwt.get_unverified_header(token)
+        algorithm = header.get("alg")
+
+        if algorithm == "ES256":
+            if not supabase_url:
+                raise ApiServiceError(
+                    500,
+                    "AUTH_NOT_CONFIGURED",
+                    "SUPABASE_URL is required to verify Supabase ES256 tokens.",
+                )
+            jwks_url = (
+                f"{supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+            )
+            signing_key = _jwks_client(jwks_url).get_signing_key_from_jwt(token)
+            verification_key = signing_key.key
+        elif algorithm == "HS256":
+            if not jwt_secret:
+                raise ApiServiceError(
+                    500,
+                    "AUTH_NOT_CONFIGURED",
+                    "SUPABASE_JWT_SECRET is required for legacy HS256 tokens.",
+                )
+            verification_key = jwt_secret
+        else:
+            raise ApiServiceError(
+                401,
+                "INVALID_TOKEN",
+                "Unsupported authentication token signing algorithm.",
+            )
+
+        issuer = f"{supabase_url.rstrip('/')}/auth/v1" if supabase_url else None
         payload = jwt.decode(
             token,
-            jwt_secret,
-            algorithms=["HS256"],
+            verification_key,
+            algorithms=[algorithm],
             audience="authenticated",
+            issuer=issuer,
         )
         sub = payload.get("sub")
         if not sub:
@@ -41,8 +76,18 @@ def verify_supabase_jwt(token: str, jwt_secret: str) -> AuthenticatedUser:
         )
     except jwt.ExpiredSignatureError as exc:
         raise ApiServiceError(401, "TOKEN_EXPIRED", "Authentication token has expired.") from exc
-    except jwt.InvalidTokenError as exc:
+    except jwt.PyJWTError as exc:
         raise ApiServiceError(401, "INVALID_TOKEN", "Invalid authentication token.") from exc
+    except ApiServiceError:
+        raise
+    except Exception as exc:
+        # JWKS retrieval failures are server-side configuration/network issues,
+        # not evidence that the user's token is invalid.
+        raise ApiServiceError(
+            503,
+            "AUTH_VERIFICATION_UNAVAILABLE",
+            "Could not retrieve Supabase signing keys. Please retry shortly.",
+        ) from exc
 
 
 async def resolve_optional_user(request: Request) -> AuthenticatedUser | None:
@@ -66,7 +111,9 @@ async def resolve_optional_user(request: Request) -> AuthenticatedUser | None:
             rate_limit_per_min=verified.rate_limit_per_min,
         )
 
-    return verify_supabase_jwt(token, settings.supabase_jwt_secret)
+    return verify_supabase_jwt(
+        token, settings.supabase_jwt_secret, settings.supabase_url
+    )
 
 
 def get_optional_jwt_user(request: Request) -> AuthenticatedUser | None:
@@ -79,7 +126,9 @@ def get_optional_jwt_user(request: Request) -> AuthenticatedUser | None:
     if token.startswith("cd_live_"):
         return None
     settings = request.app.state.settings
-    return verify_supabase_jwt(token, settings.supabase_jwt_secret)
+    return verify_supabase_jwt(
+        token, settings.supabase_jwt_secret, settings.supabase_url
+    )
 
 
 def require_jwt_user(request: Request) -> AuthenticatedUser:
