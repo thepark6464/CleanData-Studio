@@ -92,7 +92,7 @@ def _build_signed_download_url(request: Request, job_id: str) -> tuple[str, int]
         ttl_seconds=settings.signed_url_ttl_seconds,
     )
     base_url = str(request.base_url).rstrip("/")
-    return f"{base_url}/v1/downloads/{token}", settings.signed_url_ttl_seconds
+    return f"{base_url}/api/v1/downloads/{token}", settings.signed_url_ttl_seconds
 
 
 def _to_job_status_response(request: Request, job: StoredJob) -> JobStatusResponse:
