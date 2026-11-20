@@ -517,18 +517,26 @@ async def verify_checkout(
     )
 
 
-@router.post("/billing/subscription/return")
+@router.api_route("/billing/subscription/return", methods=["GET", "POST"])
 async def cashfree_subscription_return(request: Request) -> RedirectResponse:
     """
-    Cashfree Subscriptions posts form data to the configured return URL.
-    Convert that POST into a same-site GET so the authenticated billing page
-    can call /billing/verify and activate the subscription for its owner.
+    Cashfree Subscriptions normally posts form data to the configured return URL.
+    Accept GET as a compatibility fallback too, then send the customer to the
+    same-site billing page where the authenticated client verifies the status.
     """
-    raw_body = await request.body()
-    form = parse_qs(raw_body.decode("utf-8", errors="replace"))
-    subscription_id = (
-        (form.get("subscriptionId") or form.get("subscription_id") or [""])[0].strip()
-    )
+    if request.method == "POST":
+        raw_body = await request.body()
+        form = parse_qs(raw_body.decode("utf-8", errors="replace"))
+        subscription_id = (
+            (form.get("subscriptionId") or form.get("subscription_id") or [""])[0].strip()
+        )
+    else:
+        subscription_id = (
+            request.query_params.get("subscriptionId")
+            or request.query_params.get("subscription_id")
+            or ""
+        ).strip()
+
     origin = request.app.state.settings.resolved_frontend_origin.rstrip("/")
     if not subscription_id:
         target = f"{origin}/dashboard/billing?kind=subscription&return_status=missing_id"
