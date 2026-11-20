@@ -370,7 +370,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                     "payment_methods": ["upi", "card", "enach"],
                 },
                 "subscription_meta": {
-                    "return_url": f"{self.frontend_origin}/dashboard/billing?kind=subscription&subscription_id={{subscription_id}}",
+                    "return_url": f"{self.frontend_origin}/api/v1/billing/subscription/return",
                 },
                 "subscription_expiry_time": expiry_iso,
                 "subscription_note": f"CleanData {plan_name} monthly subscription",
