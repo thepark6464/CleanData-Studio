@@ -153,7 +153,7 @@ export interface ApiPaymentRecord {
   currency: string;
   provider: string;
   provider_payment_id: string | null;
-  kind: 'credit_pack' | 'subscription';
+  kind: 'credit_pack' | 'subscription' | null;
   item_name: string | null;
   status: 'pending' | 'paid' | 'failed' | 'refunded';
   created_at: string;

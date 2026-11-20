@@ -337,8 +337,15 @@ async def get_billing_summary(request: Request) -> BillingSummaryResponse:
     if db is not None:
         try:
             return await db.get_billing_summary(user.user_id)
-        except httpx.HTTPError as exc:
-            log_event("billing_summary_db_error", request_id, user_id=user.user_id)
+        except (httpx.HTTPError, ValueError) as exc:
+            status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            log_event(
+                "billing_summary_db_error",
+                request_id,
+                user_id=user.user_id,
+                error_type=type(exc).__name__,
+                db_status_code=status_code,
+            )
             raise ApiServiceError(
                 503,
                 "BILLING_DATABASE_UNAVAILABLE",

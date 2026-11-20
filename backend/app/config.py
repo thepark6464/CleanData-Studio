@@ -8,6 +8,8 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     allowed_origin: str = "http://localhost:3000"
+    allowed_origins: str = ""
+    frontend_url: str = ""
 
     api_key_pepper: str = "dev-only-pepper-change-in-prod"
     download_signing_secret: str = "dev-only-signing-secret-change-in-prod"
@@ -87,8 +89,27 @@ class Settings(BaseSettings):
         return raw.strip() or "2025-01-01"
 
     @property
+    def resolved_allowed_origins(self) -> list[str]:
+        raw_sources = [
+            self.allowed_origin,
+            self.allowed_origins or os.getenv("ALLOWED_ORIGINS", ""),
+            self.frontend_url or os.getenv("FRONTEND_URL", ""),
+        ]
+        seen: list[str] = []
+        for source in raw_sources:
+            for item in source.split(","):
+                cleaned = item.strip().rstrip("/")
+                if cleaned and cleaned not in seen:
+                    seen.append(cleaned)
+        return seen
+
+    @property
     def resolved_frontend_origin(self) -> str:
-        origins = [o.strip().rstrip("/") for o in self.allowed_origin.split(",") if o.strip()]
+        explicit_frontend = (self.frontend_url or os.getenv("FRONTEND_URL", "")).strip().rstrip("/")
+        if explicit_frontend and not explicit_frontend.startswith(("http://localhost", "http://127.0.0.1")):
+            return explicit_frontend
+
+        origins = self.resolved_allowed_origins
         non_local = next(
             (o for o in origins if not o.startswith(("http://localhost", "http://127.0.0.1"))),
             "",
@@ -106,7 +127,7 @@ class Settings(BaseSettings):
             if preview_host:
                 return f"https://{preview_host}"
 
-        return origins[0] if origins else "https://cleandata-studio.vercel.app"
+        return explicit_frontend or (origins[0] if origins else "https://cleandata-studio.vercel.app")
 
     @property
     def resolved_supabase_url(self) -> str:

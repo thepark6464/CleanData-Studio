@@ -206,7 +206,7 @@ class PaymentRecordItem(BaseModel):
     currency: str
     provider: str
     provider_payment_id: str | None = None
-    kind: Literal["credit_pack", "subscription"]
+    kind: Literal["credit_pack", "subscription"] | None = None
     item_name: str | None = None
     status: Literal["pending", "paid", "failed", "refunded"]
     created_at: str

@@ -1,10 +1,11 @@
+import httpx
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.auth.jwt_auth import require_jwt_or_api_key_user, require_jwt_user
 from app.database import SupabaseServiceClient
 from app.services.api_keys import ApiKeyService
-from app.utils.security import log_event
+from app.utils.security import ApiServiceError, log_event
 
 router = APIRouter(prefix="/v1", tags=["API Keys & Usage"])
 usage_router = APIRouter(tags=["API Keys & Usage"])
@@ -103,10 +104,24 @@ async def get_api_usage_root(request: Request) -> dict:
 @router.get("/credits")
 async def get_credits(request: Request) -> dict:
     user = await require_jwt_or_api_key_user(request)
+    request_id = request.state.request_id
     settings = request.app.state.settings
     db = SupabaseServiceClient(settings)
     if db.configured:
-        summary = await db.get_billing_summary(user.user_id)
+        try:
+            summary = await db.get_billing_summary(user.user_id)
+        except (httpx.HTTPError, ValueError) as exc:
+            log_event(
+                "credits_summary_db_error",
+                request_id,
+                user_id=user.user_id,
+                error_type=type(exc).__name__,
+            )
+            raise ApiServiceError(
+                503,
+                "BILLING_DATABASE_UNAVAILABLE",
+                "Unable to load credit wallet from database. Please retry.",
+            ) from exc
     else:
         summary = request.app.state.credits.get_summary(user.user_id)
     return {

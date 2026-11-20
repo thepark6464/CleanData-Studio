@@ -12,7 +12,7 @@ from app.services.api_keys import InMemoryApiKeyStore
 from app.services.credits import InMemoryCreditStore
 from app.services.payments import get_payment_adapter
 from app.services.storage import LocalPrivateStorage
-from app.utils.security import ApiServiceError
+from app.utils.security import ApiServiceError, log_event
 
 STRICT_API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
 SWAGGER_DOCS_CSP = (
@@ -84,7 +84,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     rate_limiter = SlidingWindowRateLimiter(requests_per_minute=cfg.rate_limit_per_min)
     app.state.rate_limiter = rate_limiter
 
-    allowed_origins = [o.strip() for o in cfg.allowed_origin.split(",") if o.strip()]
+    allowed_origins = list(cfg.resolved_allowed_origins)
     if cfg.environment == "production" and "https://cleandata-studio.vercel.app" not in allowed_origins:
         allowed_origins.append("https://cleandata-studio.vercel.app")
 
@@ -129,6 +129,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "message": str(exc.errors()[0].get("msg", "Invalid request parameters."))
                     if exc.errors()
                     else "Invalid request parameters.",
+                    "request_id": request_id,
+                },
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, exc: Exception):
+        request_id = getattr(request.state, "request_id", "unknown")
+        log_event(
+            "unhandled_api_error",
+            request_id,
+            method=request.method,
+            path=request.url.path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc)[:240],
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": f"Unexpected server error ({type(exc).__name__}).",
                     "request_id": request_id,
                 },
             },

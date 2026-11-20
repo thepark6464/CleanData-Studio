@@ -71,6 +71,12 @@ def _decode_es256_or_rs256(token: str, alg: str, supabase_url: str) -> dict:
             "INVALID_TOKEN",
             "Token signing key could not be verified against Supabase JWKS.",
         ) from exc
+    except (OSError, TimeoutError, ValueError) as exc:
+        raise ApiServiceError(
+            503,
+            "AUTH_JWKS_UNAVAILABLE",
+            "Unable to fetch Supabase JWKS signing keys.",
+        ) from exc
 
     return jwt.decode(
         token,
@@ -115,7 +121,7 @@ def verify_supabase_jwt(
 
     try:
         header = jwt.get_unverified_header(token)
-    except jwt.InvalidTokenError as exc:
+    except jwt.PyJWTError as exc:
         raise ApiServiceError(401, "INVALID_TOKEN", "Malformed authentication token header.") from exc
 
     alg = str(header.get("alg", "")).upper()
@@ -146,7 +152,7 @@ def verify_supabase_jwt(
         raise ApiServiceError(401, "INVALID_TOKEN", "Authentication token issuer mismatch.") from exc
     except jwt.InvalidAudienceError as exc:
         raise ApiServiceError(401, "INVALID_TOKEN", "Authentication token audience mismatch.") from exc
-    except jwt.InvalidTokenError as exc:
+    except (jwt.PyJWTError, ValueError, TypeError) as exc:
         raise ApiServiceError(401, "INVALID_TOKEN", "Invalid authentication token.") from exc
 
 

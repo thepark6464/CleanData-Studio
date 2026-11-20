@@ -456,7 +456,7 @@ class SupabaseServiceClient:
             )
             wallet_resp.raise_for_status()
             wallet_rows = wallet_resp.json()
-            w = wallet_rows[0] if wallet_rows else {}
+            w = wallet_rows[0] if isinstance(wallet_rows, list) and wallet_rows and isinstance(wallet_rows[0], dict) else {}
 
             sub_resp = await client.get(
                 f"{self.base_url}/rest/v1/subscriptions",
@@ -470,14 +470,17 @@ class SupabaseServiceClient:
                 },
             )
             sub_resp.raise_for_status()
-            sub_rows = sub_resp.json()
+            sub_rows_raw = sub_resp.json()
+            sub_rows = [r for r in sub_rows_raw if isinstance(r, dict)] if isinstance(sub_rows_raw, list) else []
             # Prefer active paid/system row; fall back to latest past_due/canceled/expired if no active row exists
             sub_row = next((r for r in sub_rows if r.get("status") == "active"), None) or (
                 sub_rows[0] if sub_rows else {}
             )
             plan_rel = sub_row.get("plans") or {}
             if isinstance(plan_rel, list):
-                plan_rel = plan_rel[0] if plan_rel else {}
+                plan_rel = plan_rel[0] if plan_rel and isinstance(plan_rel[0], dict) else {}
+            if not isinstance(plan_rel, dict):
+                plan_rel = {}
 
             tx_resp = await client.get(
                 f"{self.base_url}/rest/v1/credit_transactions",
@@ -489,7 +492,8 @@ class SupabaseServiceClient:
                 },
             )
             tx_resp.raise_for_status()
-            tx_rows = tx_resp.json()
+            tx_rows_raw = tx_resp.json()
+            tx_rows = [r for r in tx_rows_raw if isinstance(r, dict)] if isinstance(tx_rows_raw, list) else []
 
             pay_resp = await client.get(
                 f"{self.base_url}/rest/v1/payments",
@@ -502,19 +506,66 @@ class SupabaseServiceClient:
                 },
             )
             pay_resp.raise_for_status()
-            pay_rows = pay_resp.json()
+            pay_rows_raw = pay_resp.json()
+            pay_rows = [r for r in pay_rows_raw if isinstance(r, dict)] if isinstance(pay_rows_raw, list) else []
 
-        sub_bal = int(w.get("subscription_balance", 0))
-        pur_bal = int(w.get("purchased_balance", 0))
+        sub_bal = int(w.get("subscription_balance") or 0)
+        pur_bal = int(w.get("purchased_balance") or 0)
+
+        def _first_dict(val: Any) -> dict[str, Any]:
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                return val[0]
+            return {}
 
         def _extract_item_name(pay_row: dict[str, Any]) -> str | None:
-            pkg = pay_row.get("credit_packages")
-            if isinstance(pkg, dict) and pkg.get("name"):
+            pkg = _first_dict(pay_row.get("credit_packages"))
+            if pkg.get("name"):
                 return str(pkg["name"])
-            pln = pay_row.get("plans")
-            if isinstance(pln, dict) and pln.get("name"):
+            pln = _first_dict(pay_row.get("plans"))
+            if pln.get("name"):
                 return str(pln["name"])
             return None
+
+        def _normalize_credit_source(raw: Any) -> str:
+            val = str(raw or "").strip().lower()
+            return val if val in {"subscription", "purchased"} else "purchased"
+
+        def _normalize_tx_type(raw: Any) -> str:
+            val = str(raw or "").strip().lower()
+            allowed = {
+                "subscription_grant",
+                "purchase",
+                "reserve",
+                "commit",
+                "refund",
+                "expire",
+                "adjustment",
+            }
+            return val if val in allowed else "adjustment"
+
+        def _normalize_payment_kind(pay_row: dict[str, Any]) -> str | None:
+            val = str(pay_row.get("kind") or "").strip().lower()
+            if val in {"credit_pack", "subscription"}:
+                return val
+            if _first_dict(pay_row.get("credit_packages")).get("name"):
+                return "credit_pack"
+            if _first_dict(pay_row.get("plans")).get("name"):
+                return "subscription"
+            return None
+
+        def _normalize_payment_status(raw: Any) -> str:
+            val = str(raw or "").strip().lower()
+            if val in {"pending", "paid", "failed", "refunded"}:
+                return val
+            if val in {"captured", "succeeded", "success", "completed"}:
+                return "paid"
+            if val in {"cancelled", "canceled", "error", "expired"}:
+                return "failed"
+            return "pending"
+
+        raw_daily_limit = plan_rel.get("daily_job_limit")
 
         return BillingSummaryResponse(
             wallet=CreditWalletSummary(
@@ -525,42 +576,42 @@ class SupabaseServiceClient:
                 purchased_expires_at=w.get("purchased_expires_at"),
             ),
             subscription=ActiveSubscriptionSummary(
-                plan_name=str(plan_rel.get("name", "Free")),
-                status=str(sub_row.get("status", "active")),
+                plan_name=str(plan_rel.get("name") or "Free"),
+                status=str(sub_row.get("status") or "active"),
                 provider=str(sub_row.get("provider") or "system"),
                 provider_subscription_id=sub_row.get("provider_subscription_id"),
                 cancel_at_period_end=bool(sub_row.get("cancel_at_period_end", False)),
-                monthly_price_paise=int(plan_rel.get("monthly_price", 0)),
-                monthly_credits=int(plan_rel.get("monthly_credits", 0)),
-                max_file_size_mb=int(plan_rel.get("max_file_size_mb", 5)),
-                daily_job_limit=plan_rel.get("daily_job_limit"),
+                monthly_price_paise=int(plan_rel.get("monthly_price") or 0),
+                monthly_credits=int(plan_rel.get("monthly_credits") or 0),
+                max_file_size_mb=int(plan_rel.get("max_file_size_mb") or 5),
+                daily_job_limit=int(raw_daily_limit) if raw_daily_limit is not None else None,
                 api_access=bool(plan_rel.get("api_access", False)),
-                api_rate_limit_per_min=int(plan_rel.get("api_rate_limit_per_min", 0)),
+                api_rate_limit_per_min=int(plan_rel.get("api_rate_limit_per_min") or 0),
                 current_period_end=sub_row.get("current_period_end"),
             ),
             transactions=[
                 CreditTransactionItem(
-                    id=str(t["id"]),
-                    amount=int(t["amount"]),
-                    credit_source=t["credit_source"],
-                    transaction_type=t["transaction_type"],
+                    id=str(t.get("id") or ""),
+                    amount=int(t.get("amount") or 0),
+                    credit_source=_normalize_credit_source(t.get("credit_source")),  # type: ignore[arg-type]
+                    transaction_type=_normalize_tx_type(t.get("transaction_type")),  # type: ignore[arg-type]
                     reference_id=t.get("reference_id"),
                     expires_at=t.get("expires_at"),
-                    created_at=str(t["created_at"]),
+                    created_at=str(t.get("created_at") or ""),
                 )
                 for t in tx_rows
             ],
             payments=[
                 PaymentRecordItem(
-                    id=str(p["id"]),
-                    amount_paise=int(p["amount"]),
-                    currency=str(p.get("currency", "INR")),
+                    id=str(p.get("id") or ""),
+                    amount_paise=int(p.get("amount") or 0),
+                    currency=str(p.get("currency") or "INR"),
                     provider=str(p.get("provider") or "cashfree"),
                     provider_payment_id=p.get("provider_payment_id"),
-                    kind=p["kind"],
+                    kind=_normalize_payment_kind(p),  # type: ignore[arg-type]
                     item_name=_extract_item_name(p),
-                    status=p["status"],
-                    created_at=str(p["created_at"]),
+                    status=_normalize_payment_status(p.get("status")),  # type: ignore[arg-type]
+                    created_at=str(p.get("created_at") or ""),
                 )
                 for p in pay_rows
             ],

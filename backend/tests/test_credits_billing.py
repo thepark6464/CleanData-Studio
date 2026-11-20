@@ -1119,3 +1119,127 @@ def test_cashfree_create_subscription_logs_non_2xx_from_plans_and_subscriptions(
     assert "live_secret_value_never_logged" not in json.dumps(logged_events)
 
 
+def test_billing_summary_handles_nullable_and_legacy_db_rows():
+    import asyncio
+    from app.database import SupabaseServiceClient
+
+    cfg = Settings(
+        supabase_url="https://example.supabase.co",
+        supabase_service_role_key="service_role_test",
+    )
+    db = SupabaseServiceClient(cfg)
+
+    class _FakeDbResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class _FakeDbClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            if url.endswith("/credit_wallets"):
+                return _FakeDbResp([{"subscription_balance": None, "purchased_balance": None}])
+            if url.endswith("/subscriptions"):
+                return _FakeDbResp(
+                    [
+                        {
+                            "status": "active",
+                            "provider": None,
+                            "provider_subscription_id": "cd_sub_1",
+                            "cancel_at_period_end": False,
+                            "current_period_end": None,
+                            "plans": [
+                                {
+                                    "name": "Pro",
+                                    "monthly_price": None,
+                                    "monthly_credits": 500,
+                                    "max_file_size_mb": None,
+                                    "daily_job_limit": None,
+                                    "api_access": True,
+                                    "api_rate_limit_per_min": None,
+                                }
+                            ],
+                        }
+                    ]
+                )
+            if url.endswith("/credit_transactions"):
+                return _FakeDbResp(
+                    [
+                        {
+                            "id": "tx_1",
+                            "amount": 500,
+                            "credit_source": None,
+                            "transaction_type": "legacy_bonus",
+                            "created_at": "2026-01-01T00:00:00Z",
+                        }
+                    ]
+                )
+            if url.endswith("/payments"):
+                return _FakeDbResp(
+                    [
+                        {
+                            "id": "pay_1",
+                            "amount": 79900,
+                            "currency": None,
+                            "provider": None,
+                            "provider_payment_id": "pay_legacy_1",
+                            "kind": None,
+                            "status": "captured",
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "credit_packages": None,
+                            "plans": {"name": "Pro"},
+                        }
+                    ]
+                )
+            return _FakeDbResp([])
+
+    with patch("app.database.httpx.AsyncClient", _FakeDbClient):
+        summary = asyncio.run(db.get_billing_summary("user-123"))
+
+    assert summary.wallet.subscription_balance == 0
+    assert summary.wallet.purchased_balance == 0
+    assert summary.subscription.plan_name == "Pro"
+    assert summary.subscription.max_file_size_mb == 5
+    assert summary.transactions[0].transaction_type == "adjustment"
+    assert summary.payments[0].kind == "subscription"
+    assert summary.payments[0].status == "paid"
+    assert summary.payments[0].item_name == "Pro"
+
+
+def test_unhandled_exception_returns_structured_json_500():
+    uid = "user-500-test"
+    token = _make_hs256_token(uid, "err@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+    app = create_app(
+        Settings(
+            environment="test",
+            supabase_jwt_secret=TEST_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=WEBHOOK_SECRET,
+        )
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as tc:
+        with patch.object(
+            tc.app.state.credits,
+            "get_summary",
+            side_effect=RuntimeError("boom"),
+        ):
+            resp = tc.get("/api/v1/billing/summary", headers=headers)
+
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "INTERNAL_SERVER_ERROR"
+    assert "RuntimeError" in body["error"]["message"]
+

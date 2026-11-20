@@ -52,10 +52,14 @@ async function handleJsonResponse<T>(resp: Response): Promise<T> {
         envelope.error.request_id,
       );
     }
+    const detail =
+      data && typeof data === 'object' && 'detail' in data && typeof (data as { detail?: unknown }).detail === 'string'
+        ? (data as { detail: string }).detail
+        : null;
     throw new CleanDataApiError(
       resp.status,
       'HTTP_ERROR',
-      `Server returned HTTP ${resp.status}.`,
+      detail ? `Server returned HTTP ${resp.status}: ${detail}` : `Server returned HTTP ${resp.status}.`,
     );
   }
   return data as T;
