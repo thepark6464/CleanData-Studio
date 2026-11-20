@@ -90,6 +90,7 @@ export interface PaymentRecord {
   provider: string | null;
   provider_payment_id: string | null;
   kind: 'credit_pack' | 'subscription' | null;
+  item_name?: string | null;
   status: 'pending' | 'paid' | 'failed' | 'refunded';
   created_at: string;
 }
@@ -100,6 +101,7 @@ interface AuthContextValue {
   isPasswordRecovery: boolean;
   authCallbackError: string | null;
   clearAuthCallbackError: () => void;
+  billingError: string | null;
   session: Session | null;
   user: User | null;
   profile: UserProfile | null;
@@ -172,6 +174,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [jobs, setJobs] = useState<CleaningJobRecord[]>([]);
   const [transactions, setTransactions] = useState<CreditTransactionRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [billingError, setBillingError] = useState<string | null>(null);
 
   const clearAuthCallbackError = useCallback(() => {
     setAuthCallbackError(null);
@@ -185,6 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setJobs([]);
     setTransactions([]);
     setPayments([]);
+    setBillingError(null);
   }, []);
 
   const refreshAccountData = useCallback(async () => {
@@ -196,54 +200,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setIsDataLoading(true);
     try {
-      const [profileRes, walletRes, prefsRes, subRes, jobsRes, txRes, payRes] = await Promise.all([
-        supabase
-          .from('profiles')
-          .select('id, email, full_name, deletion_requested_at, deletion_reason, created_at')
-          .eq('id', user.id)
-          .maybeSingle(),
-        supabase
-          .from('credit_wallets')
-          .select(
-            'user_id, subscription_balance, purchased_balance, subscription_expires_at, purchased_expires_at, updated_at',
-          )
-          .eq('user_id', user.id)
-          .maybeSingle(),
-        supabase
-          .from('user_preferences')
-          .select('preferences_json')
-          .eq('user_id', user.id)
-          .maybeSingle(),
-        supabase
-          .from('subscriptions')
-          .select(
-            'status, provider, provider_subscription_id, cancel_at_period_end, current_period_end, plans(name, monthly_price, monthly_credits, max_file_size_mb, daily_job_limit, api_access, api_rate_limit_per_min)',
-          )
-          .eq('user_id', user.id)
-          .in('status', ['active', 'past_due', 'canceled', 'expired'])
-          .order('created_at', { ascending: false })
-          .limit(5),
-        supabase
-          .from('cleaning_jobs')
-          .select(
-            'id, status, input_name, input_format, output_format, rows_processed, credits_charged, created_at, completed_at, input_expires_at, output_expires_at, cleaning_reports(quality_score)',
-          )
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(50),
-        supabase
-          .from('credit_transactions')
-          .select('id, amount, credit_source, transaction_type, reference_id, expires_at, created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(50),
-        supabase
-          .from('payments')
-          .select('id, amount, currency, provider, provider_payment_id, kind, status, created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(25),
-      ]);
+      const apiBase = getApiBaseUrl();
+      const accessToken = session?.access_token;
+
+      const billingSummaryPromise =
+        apiBase && accessToken
+          ? new CleanDataApiClient(apiBase, accessToken)
+              .getBillingSummary()
+              .then((data) => ({ ok: true as const, data }))
+              .catch((err: unknown) => ({
+                ok: false as const,
+                message:
+                  err instanceof Error
+                    ? err.message
+                    : 'Unable to load billing summary from backend.',
+              }))
+          : Promise.resolve(null);
+
+      const [profileRes, walletRes, prefsRes, subRes, jobsRes, txRes, payRes, backendBilling] =
+        await Promise.all([
+          supabase
+            .from('profiles')
+            .select('id, email, full_name, deletion_requested_at, deletion_reason, created_at')
+            .eq('id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('credit_wallets')
+            .select(
+              'user_id, subscription_balance, purchased_balance, subscription_expires_at, purchased_expires_at, updated_at',
+            )
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('user_preferences')
+            .select('preferences_json')
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('subscriptions')
+            .select(
+              'status, provider, provider_subscription_id, cancel_at_period_end, current_period_end, plans(name, monthly_price, monthly_credits, max_file_size_mb, daily_job_limit, api_access, api_rate_limit_per_min)',
+            )
+            .eq('user_id', user.id)
+            .in('status', ['active', 'past_due', 'canceled', 'expired'])
+            .order('created_at', { ascending: false })
+            .limit(5),
+          supabase
+            .from('cleaning_jobs')
+            .select(
+              'id, status, input_name, input_format, output_format, rows_processed, credits_charged, created_at, completed_at, input_expires_at, output_expires_at, cleaning_reports(quality_score)',
+            )
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(50),
+          supabase
+            .from('credit_transactions')
+            .select('id, amount, credit_source, transaction_type, reference_id, expires_at, created_at')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(50),
+          supabase
+            .from('payments')
+            .select('id, amount, currency, provider, provider_payment_id, kind, status, created_at, credit_packages(name), plans(name)')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(25),
+          billingSummaryPromise,
+        ]);
 
       if (profileRes.data) {
         setProfile(profileRes.data as UserProfile);
@@ -257,9 +280,106 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           created_at: user.created_at,
         });
       }
-      if (walletRes.data) {
-        setWallet(walletRes.data as CreditWallet);
+      if (backendBilling && backendBilling.ok) {
+        const b = backendBilling.data;
+        setBillingError(null);
+        setWallet({
+          user_id: user.id,
+          subscription_balance: b.wallet.subscription_balance,
+          purchased_balance: b.wallet.purchased_balance,
+          subscription_expires_at: b.wallet.subscription_expires_at,
+          purchased_expires_at: b.wallet.purchased_expires_at,
+          updated_at: new Date().toISOString(),
+        });
+        setActivePlan({
+          name: b.subscription.plan_name,
+          monthly_price: b.subscription.monthly_price_paise,
+          monthly_credits: b.subscription.monthly_credits,
+          max_file_size_mb: b.subscription.max_file_size_mb,
+          daily_job_limit: b.subscription.daily_job_limit,
+          api_access: b.subscription.api_access,
+          api_rate_limit_per_min: b.subscription.api_rate_limit_per_min,
+          status: b.subscription.status,
+          provider: b.subscription.provider ?? 'system',
+          provider_subscription_id: b.subscription.provider_subscription_id ?? null,
+          cancel_at_period_end: Boolean(b.subscription.cancel_at_period_end),
+          current_period_end: b.subscription.current_period_end,
+        });
+        setTransactions(b.transactions as CreditTransactionRecord[]);
+        setPayments(
+          b.payments.map((p) => ({
+            id: p.id,
+            amount: p.amount_paise,
+            currency: p.currency,
+            provider: p.provider,
+            provider_payment_id: p.provider_payment_id,
+            kind: p.kind,
+            item_name: p.item_name,
+            status: p.status,
+            created_at: p.created_at,
+          })),
+        );
+      } else {
+        if (backendBilling && !backendBilling.ok) {
+          setBillingError(backendBilling.message);
+        }
+        if (walletRes.data) {
+          setWallet(walletRes.data as CreditWallet);
+        }
+        const subRows = Array.isArray(subRes.data) ? subRes.data : [];
+        const chosenSub =
+          subRows.find((r) => r.status === 'active') ?? (subRows.length > 0 ? subRows[0] : null);
+        if (chosenSub && chosenSub.plans) {
+          const planRow = Array.isArray(chosenSub.plans) ? chosenSub.plans[0] : chosenSub.plans;
+          if (planRow) {
+            setActivePlan({
+              ...(planRow as Omit<ActivePlanInfo, 'status' | 'current_period_end'>),
+              status: chosenSub.status,
+              provider: chosenSub.provider ?? 'system',
+              provider_subscription_id: chosenSub.provider_subscription_id ?? null,
+              cancel_at_period_end: Boolean(chosenSub.cancel_at_period_end),
+              current_period_end: chosenSub.current_period_end,
+            });
+          }
+        } else {
+          setActivePlan({
+            name: 'Free',
+            monthly_price: 0,
+            monthly_credits: 0,
+            max_file_size_mb: 5,
+            daily_job_limit: 3,
+            api_access: false,
+            api_rate_limit_per_min: 0,
+            status: 'active',
+            provider: 'system',
+            provider_subscription_id: null,
+            cancel_at_period_end: false,
+            current_period_end: null,
+          });
+        }
+        if (txRes.data) {
+          setTransactions(txRes.data as CreditTransactionRecord[]);
+        }
+        if (payRes.data) {
+          const mappedPayments = (payRes.data as Array<Record<string, unknown>>).map((row) => {
+            const pkg = row.credit_packages as { name?: string } | null;
+            const pln = row.plans as { name?: string } | null;
+            return {
+              id: String(row.id),
+              amount: Number(row.amount ?? 0),
+              currency: String(row.currency ?? 'INR'),
+              provider: (row.provider as string | null) ?? null,
+              provider_payment_id: (row.provider_payment_id as string | null) ?? null,
+              kind: (row.kind as PaymentRecord['kind']) ?? null,
+              item_name: pkg?.name ?? pln?.name ?? null,
+              status: row.status as PaymentRecord['status'],
+              created_at: String(row.created_at),
+            };
+          });
+          setPayments(mappedPayments);
+        }
       }
+
       if (prefsRes.data && prefsRes.data.preferences_json) {
         const raw = prefsRes.data.preferences_json as Partial<UserPreferences>;
         setPreferences({
@@ -268,38 +388,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           phoneRegion: raw.phoneRegion ?? 'IN',
           formulaProtection:
             typeof raw.formulaProtection === 'boolean' ? raw.formulaProtection : true,
-        });
-      }
-
-      const subRows = Array.isArray(subRes.data) ? subRes.data : [];
-      const chosenSub =
-        subRows.find((r) => r.status === 'active') ?? (subRows.length > 0 ? subRows[0] : null);
-      if (chosenSub && chosenSub.plans) {
-        const planRow = Array.isArray(chosenSub.plans) ? chosenSub.plans[0] : chosenSub.plans;
-        if (planRow) {
-          setActivePlan({
-            ...(planRow as Omit<ActivePlanInfo, 'status' | 'current_period_end'>),
-            status: chosenSub.status,
-            provider: chosenSub.provider ?? 'system',
-            provider_subscription_id: chosenSub.provider_subscription_id ?? null,
-            cancel_at_period_end: Boolean(chosenSub.cancel_at_period_end),
-            current_period_end: chosenSub.current_period_end,
-          });
-        }
-      } else {
-        setActivePlan({
-          name: 'Free',
-          monthly_price: 0,
-          monthly_credits: 0,
-          max_file_size_mb: 5,
-          daily_job_limit: 3,
-          api_access: false,
-          api_rate_limit_per_min: 0,
-          status: 'active',
-          provider: 'system',
-          provider_subscription_id: null,
-          cancel_at_period_end: false,
-          current_period_end: null,
         });
       }
 
@@ -331,16 +419,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
         setJobs(mapped);
       }
-      if (txRes.data) {
-        setTransactions(txRes.data as CreditTransactionRecord[]);
-      }
-      if (payRes.data) {
-        setPayments(payRes.data as PaymentRecord[]);
-      }
     } finally {
       setIsDataLoading(false);
     }
-  }, [user, clearAccountData]);
+  }, [user, session?.access_token, clearAccountData]);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
@@ -524,6 +606,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isPasswordRecovery,
         authCallbackError,
         clearAuthCallbackError,
+        billingError,
         session,
         user,
         profile,

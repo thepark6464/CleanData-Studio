@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CREDIT_PACKS, SUBSCRIPTION_PLANS } from '../config/pricing';
-import { CleanDataApiClient } from '../lib/api/client';
+import { CleanDataApiClient, CleanDataApiError } from '../lib/api/client';
 
 describe('Pricing catalog & Cashfree billing API client', () => {
   afterEach(() => {
@@ -23,7 +23,7 @@ describe('Pricing catalog & Cashfree billing API client', () => {
     ]);
   });
 
-  it('creates Cashfree PG order session, verifies payment server-side, and cancels subscription', async () => {
+  it('creates Cashfree PG order session, verifies payment server-side, fetches summary, and cancels subscription', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
@@ -62,7 +62,7 @@ describe('Pricing catalog & Cashfree billing API client', () => {
             plan_name: 'Pro',
             status: 'active',
             provider: 'cashfree',
-            provider_subscription_id: 'cd_sub_1',
+            provider_subscription_id: 'cd_sub_7ca9fa3d69e7452c',
             cancel_at_period_end: false,
             monthly_price_paise: 79900,
             monthly_credits: 500,
@@ -79,7 +79,48 @@ describe('Pricing catalog & Cashfree billing API client', () => {
         ok: true,
         json: async () => ({
           success: true,
-          subscription_id: 'cd_sub_1',
+          wallet: {
+            subscription_balance: 500,
+            purchased_balance: 50,
+            total_balance: 550,
+            subscription_expires_at: '2026-07-01T00:00:00Z',
+            purchased_expires_at: '2027-06-01T00:00:00Z',
+          },
+          subscription: {
+            plan_name: 'Pro',
+            status: 'active',
+            provider: 'cashfree',
+            provider_subscription_id: 'cd_sub_7ca9fa3d69e7452c',
+            cancel_at_period_end: false,
+            monthly_price_paise: 79900,
+            monthly_credits: 500,
+            max_file_size_mb: 100,
+            daily_job_limit: null,
+            api_access: true,
+            api_rate_limit_per_min: 60,
+            current_period_end: '2026-07-01T00:00:00Z',
+          },
+          transactions: [],
+          payments: [
+            {
+              id: 'pay-sub-1',
+              amount_paise: 79900,
+              currency: 'INR',
+              provider: 'cashfree',
+              provider_payment_id: 'cd_sub_7ca9fa3d69e7452c',
+              kind: 'subscription',
+              item_name: 'Pro',
+              status: 'paid',
+              created_at: '2026-06-01T00:00:00Z',
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          success: true,
+          subscription_id: 'cd_sub_7ca9fa3d69e7452c',
           status: 'canceled',
           plan_name: 'Pro',
           message: 'Cancelled',
@@ -112,22 +153,70 @@ describe('Pricing catalog & Cashfree billing API client', () => {
 
     const verified = await client.verifyCheckout({
       kind: 'subscription',
-      subscription_id: 'cd_sub_1',
+      subscription_id: 'cd_sub_7ca9fa3d69e7452c',
     });
     expect(verified.status).toBe('active');
     expect(verified.subscription.plan_name).toBe('Pro');
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       '/api/v1/billing/verify',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'subscription',
+          subscription_id: 'cd_sub_7ca9fa3d69e7452c',
+        }),
+      }),
+    );
+
+    const summary = await client.getBillingSummary();
+    expect(summary.subscription.plan_name).toBe('Pro');
+    expect(summary.payments[0]?.item_name).toBe('Pro');
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/billing/summary',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer supabase-jwt-token',
+        }),
+      }),
     );
 
     const canceled = await client.cancelSubscription();
     expect(canceled.status).toBe('canceled');
     expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+      4,
       '/api/v1/billing/subscription/cancel',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  it('surfaces backend error codes clearly when subscription ownership or DB checks fail', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      json: async () => ({
+        success: false,
+        error: {
+          code: 'SUBSCRIPTION_OWNERSHIP_MISMATCH',
+          message: 'This Cashfree subscription is linked to a different user account.',
+          request_id: 'req_123',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new CleanDataApiClient('/api', 'supabase-jwt-token');
+    await expect(
+      client.verifyCheckout({
+        kind: 'subscription',
+        subscription_id: 'cd_sub_7ca9fa3d69e7452c',
+      }),
+    ).rejects.toMatchObject({
+      name: 'CleanDataApiError',
+      status: 403,
+      code: 'SUBSCRIPTION_OWNERSHIP_MISMATCH',
+      requestId: 'req_123',
+    });
   });
 });

@@ -123,9 +123,12 @@ Cashfree separates webhook configuration between **Payment Gateway** and **Subsc
 3. Set the Webhook / API Version to **`2025-01-01`**.
 4. Enable all subscription lifecycle & charge events:
    * `SUBSCRIPTION_STATUS_CHANGED`
+   * `SUBSCRIPTION_AUTH_STATUS`
    * `SUBSCRIPTION_PAYMENT_SUCCESS`
    * `SUBSCRIPTION_PAYMENT_FAILED`
-   * `SUBSCRIPTION_CANCELLED` / `SUBSCRIPTION_PAUSED` / `SUBSCRIPTION_EXPIRED` *(if listed separately in your dashboard version)*
+   * `SUBSCRIPTION_PAYMENT_CANCELLED`
+   * `SUBSCRIPTION_PAYMENT_NOTIFICATION_INITIATED`
+   * `SUBSCRIPTION_ACTIVATED` / `SUBSCRIPTION_CANCELLED` / `SUBSCRIPTION_PAUSED` / `SUBSCRIPTION_EXPIRED` *(if listed separately in your dashboard version)*
 5. Save and test webhook delivery.
 
 ### Webhook Signature Verification & `CASHFREE_WEBHOOK_SECRET`
@@ -161,7 +164,7 @@ If your Cashfree Production account enforces a **Domain / Return URL Whitelist**
 
 ## 6. Sandbox-to-Production Cutover Checklist
 
-- [ ] Supabase migrations `0001` through `0005_cashfree_subscriptions.sql` applied to production database.
+- [ ] Supabase migrations `0001` through `0006_billing_reconciliation_and_wallets.sql` applied to production database.
 - [ ] Cashfree **Production** API Keys generated (`CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`) and set in Vercel **backend** Production environment variables.
 - [ ] `CASHFREE_ENV="production"` and `CASHFREE_API_VERSION="2025-01-01"` set on Vercel **backend** Production service.
 - [ ] `ALLOWED_ORIGIN="https://cleandata-studio.vercel.app"` verified on Vercel **backend**.

@@ -69,7 +69,7 @@ Schedule an hourly or daily cron job / Supabase pg_cron task to invoke `cleanup_
 - [ ] Browser-local cleaning tested on CSV and XLSX up to 5 MB with zero network file upload.
 - [ ] `npm run lint`, `npm test`, and `npm run build` exit `0`.
 - [ ] `pytest -v` passes all cleaning parity, JWT auth, billing/credit, and API key/security suites.
-- [ ] Supabase migrations `0001`–`0005` applied and `supabase/tests/rls_two_user_test.sql` passes.
-- [ ] Cashfree Sandbox/Production webhook URLs registered for `/api/v1/webhooks/payments` (both PG and Subscriptions tabs) with `CASHFREE_WEBHOOK_SECRET` and Subscriptions enabled on merchant account.
+- [ ] Supabase migrations `0001`–`0006` applied and `supabase/tests/rls_two_user_test.sql` passes.
+- [ ] Cashfree Sandbox/Production webhook URLs registered for `/api/v1/webhooks/payments` (both PG and Subscriptions tabs: `SUBSCRIPTION_STATUS_CHANGED`, `SUBSCRIPTION_AUTH_STATUS`, `SUBSCRIPTION_PAYMENT_SUCCESS`, `SUBSCRIPTION_PAYMENT_FAILED`, `SUBSCRIPTION_PAYMENT_CANCELLED`, `SUBSCRIPTION_PAYMENT_NOTIFICATION_INITIATED`) with `CASHFREE_WEBHOOK_SECRET` and Subscriptions enabled on merchant account.
 - [ ] `ENVIRONMENT=production` verified so HSTS, CSP, `Permissions-Policy`, and `nosniff` headers are active.
 - [ ] Retention cleanup cron job active for 24h inputs / 7d outputs.

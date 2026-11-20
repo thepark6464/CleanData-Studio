@@ -577,3 +577,267 @@ def test_free_plan_daily_server_limit_and_purchased_credit_expiry(tmp_path):
     expired_summary = store.get_summary("expired-user")
     assert expired_summary.wallet.subscription_balance == 0
     assert expired_summary.wallet.purchased_balance == 0
+
+
+def test_cashfree_2025_cf_event_nested_webhooks_and_authorisation_details(tmp_path):
+    cfg = Settings(
+        environment="test",
+        cashfree_app_id="cf_app_test",
+        cashfree_secret_key="cf_secret_test",
+        cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        cashfree_env="sandbox",
+        cashfree_api_version="2025-01-01",
+    )
+    adapter = CashfreePaymentAdapter(cfg)
+
+    # Cashfree 2025-01-01 Subscription webhooks use cf_event and nest plan_details/customer_details inside subscription_details
+    parsed_nested = adapter.parse_webhook_event(
+        {
+            "cf_event": "SUBSCRIPTION_STATUS_CHANGED",
+            "event_time": "2026-06-15T12:25:00+05:30",
+            "data": {
+                "subscription_details": {
+                    "subscription_id": "cd_sub_7ca9fa3d69e7452c",
+                    "cf_subscription_id": "cf_sub_nested_1",
+                    "subscription_status": "ACTIVE",
+                    "next_schedule_date": "2026-07-15T00:00:00+05:30",
+                    "plan_details": {
+                        "plan_id": "cleandata_pro_monthly",
+                        "plan_recurring_amount": 799.0,
+                        "plan_currency": "INR",
+                    },
+                    "customer_details": {
+                        "customer_email": "pro@example.com",
+                    },
+                },
+                "authorisation_details": {
+                    "authorization_status": "ACTIVE",
+                    "cf_payment_id": "cf_auth_pay_799",
+                },
+            },
+        }
+    )
+    assert parsed_nested.domain == "subscription"
+    assert parsed_nested.event_type == "SUBSCRIPTION_STATUS_CHANGED"
+    assert parsed_nested.subscription_id == "cd_sub_7ca9fa3d69e7452c"
+    assert parsed_nested.status == "activated"
+    assert parsed_nested.amount_paise == 79900
+    assert parsed_nested.cf_payment_id == "cf_auth_pay_799"
+    assert parsed_nested.payload_meta.get("customer_email") == "pro@example.com"
+
+    # SUBSCRIPTION_PAYMENT_CANCELLED and SUBSCRIPTION_PAYMENT_NOTIFICATION_INITIATED
+    parsed_cancelled = adapter.parse_webhook_event(
+        {
+            "cf_event": "SUBSCRIPTION_PAYMENT_CANCELLED",
+            "data": {
+                "subscription_details": {"subscription_id": "cd_sub_cancel_1", "subscription_status": "ACTIVE"},
+                "payment_details": {"cf_payment_id": "cf_pay_c1", "payment_status": "CANCELLED", "payment_amount": 799.0},
+            },
+        }
+    )
+    assert parsed_cancelled.status == "payment_failed"
+
+    parsed_notif = adapter.parse_webhook_event(
+        {
+            "cf_event": "SUBSCRIPTION_PAYMENT_NOTIFICATION_INITIATED",
+            "data": {
+                "subscription_details": {"subscription_id": "cd_sub_notif_1", "subscription_status": "ACTIVE"},
+            },
+        }
+    )
+    assert parsed_notif.status == "pending"
+
+    parsed_auth_fail = adapter.parse_webhook_event(
+        {
+            "cf_event": "SUBSCRIPTION_AUTH_STATUS",
+            "data": {
+                "subscription_details": {"subscription_id": "cd_sub_auth_fail"},
+                "authorisation_details": {"authorization_status": "FAILED"},
+            },
+        }
+    )
+    assert parsed_auth_fail.status == "payment_failed"
+
+
+def test_reconcile_missing_subscription_by_tags_and_email_and_reject_unauthorized(tmp_path):
+    client = _make_client(tmp_path)
+    sub_id = "cd_sub_7ca9fa3d69e7452c"
+    owner_uid = "user-pro-owner-1"
+    owner_headers = {"Authorization": f"Bearer {_make_jwt(owner_uid, 'owner@cleandata.test')}"}
+    attacker_headers = {"Authorization": f"Bearer {_make_jwt('attacker-2', 'other@cleandata.test')}"}
+
+    # Simulate Sandbox subscription present on Cashfree (with tags) but missing from local DB
+    client.app.state.payment_adapter.subscriptions[sub_id] = SubscriptionVerificationResult(
+        subscription_id=sub_id,
+        subscription_status="ACTIVE",
+        cf_subscription_id="cf_sub_sandbox_799",
+        plan_id="cleandata_pro_monthly",
+        amount_paise=79900,
+        currency="INR",
+        next_schedule_date="2026-07-20T00:00:00Z",
+        cf_payment_id="cf_pay_sandbox_799",
+        customer_email="owner@cleandata.test",
+        customer_id=owner_uid,
+        subscription_tags={"user_id": owner_uid, "plan_name": "Pro"},
+    )
+
+    # Another user trying to claim cd_sub_7ca9fa3d69e7452c must receive HTTP 403
+    unauth = client.post(
+        "/api/v1/billing/verify",
+        json={"kind": "subscription", "subscription_id": sub_id},
+        headers=attacker_headers,
+    )
+    assert unauth.status_code == 403
+
+    # Legitimate owner reconciles cd_sub_7ca9fa3d69e7452c cleanly
+    reconcile = client.post(
+        "/api/v1/billing/verify",
+        json={"kind": "subscription", "subscription_id": sub_id},
+        headers=owner_headers,
+    )
+    assert reconcile.status_code == 200
+    body = reconcile.json()
+    assert body["status"] == "active"
+    assert body["subscription"]["plan_name"] == "Pro"
+    assert body["subscription"]["provider_subscription_id"] == sub_id
+    assert body["wallet"]["subscription_balance"] == 500
+
+    # Payment row was also reconciled so billing history is not empty
+    summary = client.get("/api/v1/billing/summary", headers=owner_headers).json()
+    assert len(summary["payments"]) == 1
+    assert summary["payments"][0]["status"] == "paid"
+    assert summary["payments"][0]["amount_paise"] == 79900
+    assert summary["payments"][0]["item_name"] == "Pro"
+
+    # Re-calling verify is idempotent (no duplicate credits or duplicate payment rows)
+    again = client.post(
+        "/api/v1/billing/verify",
+        json={"kind": "subscription", "subscription_id": sub_id},
+        headers=owner_headers,
+    )
+    assert again.status_code == 200
+    assert again.json()["wallet"]["subscription_balance"] == 500
+    assert len(client.get("/api/v1/billing/summary", headers=owner_headers).json()["payments"]) == 1
+
+    # Email fallback reconciliation when subscription_tags are absent
+    sub_email_id = "cd_sub_email_fallback_1"
+    client.app.state.payment_adapter.subscriptions[sub_email_id] = SubscriptionVerificationResult(
+        subscription_id=sub_email_id,
+        subscription_status="ACTIVE",
+        cf_subscription_id="cf_sub_email_1",
+        plan_id="cleandata_starter_monthly",
+        amount_paise=29900,
+        currency="INR",
+        customer_email="EmailMatch@CleanData.test",
+        subscription_tags=None,
+    )
+    email_headers = {"Authorization": f"Bearer {_make_jwt('user-email-1', 'emailmatch@cleandata.test')}"}
+    rec_email = client.post(
+        "/api/v1/billing/verify",
+        json={"kind": "subscription", "subscription_id": sub_email_id},
+        headers=email_headers,
+    )
+    assert rec_email.status_code == 200
+    assert rec_email.json()["subscription"]["plan_name"] == "Starter"
+    assert rec_email.json()["wallet"]["subscription_balance"] == 100
+
+
+def test_webhook_reconciles_missing_subscription_and_rejects_get_method(tmp_path):
+    client = _make_client(tmp_path)
+    sub_id = "cd_sub_webhook_reconcile_1"
+    uid = "user-wh-rec-1"
+
+    # Direct browser GET on webhook endpoint must remain 405 Method Not Allowed
+    get_resp = client.get("/api/v1/webhooks/payments")
+    assert get_resp.status_code == 405
+    assert get_resp.json()["detail"] == "Method Not Allowed"
+
+    # Cashfree has the active Pro subscription, even though local DB lost pending rows
+    client.app.state.payment_adapter.subscriptions[sub_id] = SubscriptionVerificationResult(
+        subscription_id=sub_id,
+        subscription_status="ACTIVE",
+        cf_subscription_id="cf_sub_wh_rec_1",
+        plan_id="cleandata_pro_monthly",
+        amount_paise=79900,
+        currency="INR",
+        cf_payment_id="cf_pay_wh_rec_1",
+        customer_email="wh@example.com",
+        subscription_tags={"user_id": uid, "plan_name": "Pro"},
+    )
+
+    wh_body = json.dumps(
+        {
+            "cf_event": "SUBSCRIPTION_STATUS_CHANGED",
+            "event_id": "evt_wh_rec_1",
+            "data": {
+                "subscription_details": {
+                    "subscription_id": sub_id,
+                    "cf_subscription_id": "cf_sub_wh_rec_1",
+                    "subscription_status": "ACTIVE",
+                    "plan_details": {
+                        "plan_id": "cleandata_pro_monthly",
+                        "plan_recurring_amount": 799.0,
+                        "plan_currency": "INR",
+                    },
+                }
+            },
+        }
+    ).encode("utf-8")
+    post_resp = client.post(
+        "/api/v1/webhooks/payments",
+        content=wh_body,
+        headers=_sign_cashfree_webhook(wh_body),
+    )
+    assert post_resp.status_code == 200
+    assert post_resp.json()["result"]["status"] == "processed"
+    assert post_resp.json()["result"]["credited"] is True
+
+    headers = {"Authorization": f"Bearer {_make_jwt(uid, 'wh@example.com')}"}
+    summary = client.get("/api/v1/billing/summary", headers=headers).json()
+    assert summary["subscription"]["plan_name"] == "Pro"
+    assert summary["wallet"]["subscription_balance"] == 500
+
+
+def test_production_environment_fails_closed_without_supabase(tmp_path):
+    settings = Settings(
+        environment="production",
+        storage_dir=str(tmp_path),
+        supabase_jwt_secret=TEST_JWT_SECRET,
+        supabase_url="",
+        supabase_service_role_key="",
+        payment_provider="cashfree",
+        cashfree_app_id="cf_live_id",
+        cashfree_secret_key="cf_live_secret",
+        cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        rate_limit_per_min=300,
+    )
+    prod_client = TestClient(create_app(settings))
+    headers = {"Authorization": f"Bearer {_make_jwt('prod-user-1')}"}
+
+    resp = prod_client.get("/api/v1/billing/summary", headers=headers)
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "BILLING_DATABASE_NOT_CONFIGURED"
+
+    ping_body = json.dumps({"type": "WEBHOOK_TEST", "data": {}}).encode("utf-8")
+    wh_resp = prod_client.post(
+        "/api/v1/webhooks/payments",
+        content=ping_body,
+        headers=_sign_cashfree_webhook(ping_body),
+    )
+    assert wh_resp.status_code == 503
+    assert wh_resp.json()["error"]["code"] == "BILLING_DATABASE_NOT_CONFIGURED"
+
+
+def test_vercel_multi_service_routing_configuration():
+    vercel_path = Path(__file__).resolve().parents[2] / "vercel.json"
+    cfg = json.loads(vercel_path.read_text(encoding="utf-8"))
+    assert cfg["services"]["backend"]["framework"] == "fastapi"
+    assert cfg["services"]["backend"]["entrypoint"] == "app.main:app"
+    rewrites = cfg["rewrites"]
+    sources = [r["source"] for r in rewrites]
+    assert "/api" in sources
+    assert "/api/(.*)" in sources
+    assert sources.index("/api/(.*)") < sources.index("/(.*)")
+    api_rule = next(r for r in rewrites if r["source"] == "/api/(.*)")
+    assert api_rule["destination"]["service"] == "backend"
+

@@ -430,12 +430,28 @@ class InMemoryCreditStore:
             return row
         return None
 
+    def get_order_owner_any_user(self, order_id: str) -> str | None:
+        pid = self.payment_by_provider_id.get(order_id)
+        if not pid:
+            return None
+        row = self.payments.get(pid)
+        return str(row["user_id"]) if row else None
+
     def get_subscription_for_user(
         self, user_id: str, subscription_id: str
     ) -> dict[str, Any] | None:
         row = self.subscriptions.get(subscription_id)
         if row and row["user_id"] == user_id:
             return row
+        return None
+
+    def get_subscription_owner_any_user(self, subscription_id: str) -> str | None:
+        row = self.subscriptions.get(subscription_id)
+        if row:
+            return str(row["user_id"])
+        pid = self.payment_by_provider_id.get(subscription_id)
+        if pid and pid in self.payments:
+            return str(self.payments[pid]["user_id"])
         return None
 
     def list_other_active_subscriptions(
@@ -541,7 +557,6 @@ class InMemoryCreditStore:
         dedup_key = (provider, event_id)
         if dedup_key in self.webhook_events:
             return {"status": "already_processed"}
-        self.webhook_events.add(dedup_key)
 
         sub = self.subscriptions.get(subscription_id)
         if not sub:
@@ -563,6 +578,8 @@ class InMemoryCreditStore:
                 "last_credited_payment_id": None,
             }
             self.subscriptions[subscription_id] = sub
+
+        self.webhook_events.add(dedup_key)
 
         plan = PLAN_CATALOG.get(sub["plan_name"])
         if not plan:

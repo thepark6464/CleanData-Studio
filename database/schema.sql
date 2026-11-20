@@ -33,10 +33,15 @@ create table if not exists public.subscriptions (
   status text not null check (status in ('active','past_due','canceled','expired','pending')),
   provider text,
   provider_subscription_id text unique,
+  cf_subscription_id text,
+  provider_plan_id text,
   current_period_start timestamptz,
   current_period_end timestamptz,
   cancel_at_period_end boolean not null default false,
-  created_at timestamptz not null default now()
+  last_credited_at timestamptz,
+  last_credited_payment_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists public.credit_wallets (
@@ -129,18 +134,24 @@ create table if not exists public.payments (
   currency text not null default 'INR',
   provider text,
   provider_payment_id text unique,
+  provider_order_id text,
+  provider_reference_id text,
   kind text check (kind in ('credit_pack','subscription')),
   package_id uuid references public.credit_packages(id),
   plan_id uuid references public.plans(id),
   status text not null default 'pending'
     check (status in ('pending','paid','failed','refunded')),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists public.webhook_events (
   id uuid primary key default gen_random_uuid(),
   provider text not null,
   event_id text not null,
+  event_type text,
+  processing_status text,
+  processing_result jsonb not null default '{}'::jsonb,
   processed_at timestamptz not null default now(),
   payload_meta jsonb not null default '{}'::jsonb,
   unique (provider, event_id)

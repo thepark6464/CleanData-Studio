@@ -74,6 +74,10 @@ class SubscriptionVerificationResult:
     currency: str = "INR"
     next_schedule_date: str | None = None
     cf_payment_id: str | None = None
+    customer_email: str | None = None
+    customer_id: str | None = None
+    subscription_tags: dict[str, Any] | None = None
+    authorization_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -310,6 +314,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             )
 
             customer_details: dict[str, str] = {
+                "customer_id": _sanitize_customer_id(user_id),
                 "customer_name": (user_email.split("@")[0] if user_email else "CleanData User")[:60],
                 "customer_phone": _sanitize_phone(customer_phone),
             }
@@ -439,11 +444,49 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 )
             data = resp.json()
             plan_details = data.get("plan_details") if isinstance(data.get("plan_details"), dict) else {}
-            auth_details = (
-                data.get("authorization_details")
-                if isinstance(data.get("authorization_details"), dict)
+            auth_details_raw = (
+                data.get("authorisation_details")
+                if isinstance(data.get("authorisation_details"), dict)
+                else data.get("authorization_details")
+            )
+            auth_details = auth_details_raw if isinstance(auth_details_raw, dict) else {}
+            customer_details = (
+                data.get("customer_details")
+                if isinstance(data.get("customer_details"), dict)
                 else {}
             )
+            tags = (
+                data.get("subscription_tags")
+                if isinstance(data.get("subscription_tags"), dict)
+                else None
+            )
+
+            sub_status = str(data.get("subscription_status") or "INITIALIZED").upper()
+            cf_payment_id = (
+                str(auth_details.get("cf_payment_id") or auth_details.get("payment_id") or "")
+                or None
+            )
+
+            # Query subscription payments list when ACTIVE to resolve authoritative cf_payment_id if absent
+            if not cf_payment_id and sub_status == "ACTIVE":
+                try:
+                    pay_resp = await client.get(
+                        f"{self.base_url}/subscriptions/{subscription_id}/payments",
+                        headers=self._headers(),
+                    )
+                    if pay_resp.status_code == 200:
+                        pay_rows = pay_resp.json()
+                        if isinstance(pay_rows, list):
+                            for row in pay_rows:
+                                if isinstance(row, dict) and str(row.get("payment_status", "")).upper() == "SUCCESS":
+                                    cf_payment_id = (
+                                        str(row.get("cf_payment_id") or row.get("payment_id") or "")
+                                        or None
+                                    )
+                                    break
+                except httpx.HTTPError:
+                    pass
+
             amount_paise = _rupees_to_paise(
                 plan_details.get("plan_recurring_amount")
                 or plan_details.get("plan_amount")
@@ -451,7 +494,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             )
             return SubscriptionVerificationResult(
                 subscription_id=str(data.get("subscription_id") or subscription_id),
-                subscription_status=str(data.get("subscription_status") or "INITIALIZED").upper(),
+                subscription_status=sub_status,
                 cf_subscription_id=(
                     str(data["cf_subscription_id"]) if data.get("cf_subscription_id") else None
                 ),
@@ -459,6 +502,11 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 amount_paise=amount_paise,
                 currency=str(plan_details.get("plan_currency") or "INR").upper(),
                 next_schedule_date=str(data.get("next_schedule_date") or "") or None,
+                cf_payment_id=cf_payment_id,
+                customer_email=str(customer_details.get("customer_email") or "").strip() or None,
+                customer_id=str(customer_details.get("customer_id") or "").strip() or None,
+                subscription_tags=tags,
+                authorization_status=str(auth_details.get("authorization_status") or "").upper() or None,
             )
 
     async def cancel_subscription(self, subscription_id: str) -> dict[str, Any]:
@@ -500,7 +548,12 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         return hmac.compare_digest(expected_b64, signature_header.strip())
 
     def parse_webhook_event(self, payload: dict[str, Any]) -> ParsedWebhookEvent:
-        event_type = str(payload.get("type") or payload.get("event") or "").upper()
+        event_type = str(
+            payload.get("type")
+            or payload.get("cf_event")
+            or payload.get("event")
+            or ""
+        ).upper()
         event_time = str(payload.get("event_time") or "")
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
 
@@ -528,12 +581,43 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                     else {}
                 )
             )
+            # In Cashfree 2025-01-01 SUBSCRIPTION_STATUS_CHANGED, plan_details and customer_details
+            # may be nested inside subscription_details OR directly under data.
             plan_details = (
                 data.get("plan_details")
                 if isinstance(data.get("plan_details"), dict)
                 else (
-                    data.get("plan")
-                    if isinstance(data.get("plan"), dict)
+                    sub_details.get("plan_details")
+                    if isinstance(sub_details.get("plan_details"), dict)
+                    else (
+                        data.get("plan")
+                        if isinstance(data.get("plan"), dict)
+                        else {}
+                    )
+                )
+            )
+            customer_details = (
+                data.get("customer_details")
+                if isinstance(data.get("customer_details"), dict)
+                else (
+                    sub_details.get("customer_details")
+                    if isinstance(sub_details.get("customer_details"), dict)
+                    else {}
+                )
+            )
+            auth_details_raw = (
+                data.get("authorisation_details")
+                or data.get("authorization_details")
+                or sub_details.get("authorisation_details")
+                or sub_details.get("authorization_details")
+            )
+            auth_details = auth_details_raw if isinstance(auth_details_raw, dict) else {}
+            sub_tags = (
+                data.get("subscription_tags")
+                if isinstance(data.get("subscription_tags"), dict)
+                else (
+                    sub_details.get("subscription_tags")
+                    if isinstance(sub_details.get("subscription_tags"), dict)
                     else {}
                 )
             )
@@ -541,11 +625,16 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             sub_id = str(
                 sub_details.get("subscription_id")
                 or data.get("subscription_id")
+                or payload.get("subscription_id")
                 or ""
             )
             cf_sub_id = str(sub_details.get("cf_subscription_id") or "")
             cf_payment_id = str(
-                pay_details.get("cf_payment_id") or pay_details.get("payment_id") or ""
+                pay_details.get("cf_payment_id")
+                or pay_details.get("payment_id")
+                or auth_details.get("cf_payment_id")
+                or auth_details.get("payment_id")
+                or ""
             )
             sub_status_raw = str(sub_details.get("subscription_status") or "").upper()
             pay_status_raw = str(pay_details.get("payment_status") or "").upper()
@@ -556,8 +645,8 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             ).upper()
             amount_paise = _rupees_to_paise(
                 pay_details.get("payment_amount")
-                or plan_details.get("plan_amount")
                 or plan_details.get("plan_recurring_amount")
+                or plan_details.get("plan_amount")
             )
             next_schedule_date = (
                 str(sub_details.get("next_schedule_date") or "") or None
@@ -567,10 +656,13 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 event_type.startswith("SUBSCRIPTION_PAYMENT") and pay_status_raw == "SUCCESS"
             ):
                 normalized_kind = "renewal_paid"
-            elif event_type == "SUBSCRIPTION_PAYMENT_FAILED" or (
-                event_type.startswith("SUBSCRIPTION_PAYMENT") and pay_status_raw in {"FAILED", "USER_DROPPED"}
+            elif event_type in {"SUBSCRIPTION_PAYMENT_FAILED", "SUBSCRIPTION_PAYMENT_CANCELLED"} or (
+                event_type.startswith("SUBSCRIPTION_PAYMENT")
+                and pay_status_raw in {"FAILED", "CANCELLED", "USER_DROPPED"}
             ):
                 normalized_kind = "payment_failed"
+            elif event_type == "SUBSCRIPTION_PAYMENT_NOTIFICATION_INITIATED":
+                normalized_kind = "pending"
             elif event_type in {"SUBSCRIPTION_CANCELLED", "SUBSCRIPTION_PAUSED"} or sub_status_raw in {
                 "CANCELLED",
                 "CUSTOMER_CANCELLED",
@@ -579,7 +671,10 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 normalized_kind = "canceled"
             elif event_type == "SUBSCRIPTION_EXPIRED" or sub_status_raw in {"EXPIRED", "COMPLETED"}:
                 normalized_kind = "expired"
-            elif sub_status_raw in {"ON_HOLD", "BANK_APPROVAL_FAILED"}:
+            elif sub_status_raw in {"ON_HOLD", "BANK_APPROVAL_FAILED"} or (
+                event_type == "SUBSCRIPTION_AUTH_STATUS"
+                and str(auth_details.get("authorization_status") or "").upper() in {"FAILED", "BANK_APPROVAL_FAILED"}
+            ):
                 normalized_kind = "payment_failed"
             elif event_type == "SUBSCRIPTION_ACTIVATED" or sub_status_raw == "ACTIVE":
                 normalized_kind = "activated"
@@ -612,6 +707,8 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                     "cf_payment_id": cf_payment_id or None,
                     "amount_paise": amount_paise,
                     "currency": currency,
+                    "customer_email": customer_details.get("customer_email"),
+                    "tag_user_id": sub_tags.get("user_id"),
                 },
             )
 

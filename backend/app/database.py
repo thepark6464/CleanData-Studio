@@ -205,6 +205,54 @@ class SupabaseServiceClient:
             rows = resp.json()
             return rows[0] if rows else None
 
+    async def ensure_user_billing_profile(self, user_id: str, email: str | None = None) -> None:
+        if not self.configured or not user_id:
+            return
+        headers = {**self._headers(), "Prefer": "resolution=ignore-duplicates"}
+        profile_payload: dict[str, Any] = {"id": user_id}
+        if email:
+            profile_payload["email"] = email.strip()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            prof_resp = await client.post(
+                f"{self.base_url}/rest/v1/profiles",
+                headers=headers,
+                params={"on_conflict": "id"},
+                json=profile_payload,
+            )
+            prof_resp.raise_for_status()
+            wallet_resp = await client.post(
+                f"{self.base_url}/rest/v1/credit_wallets",
+                headers=headers,
+                params={"on_conflict": "user_id"},
+                json={
+                    "user_id": user_id,
+                    "subscription_balance": 0,
+                    "purchased_balance": 0,
+                },
+            )
+            wallet_resp.raise_for_status()
+
+    async def find_user_id_by_email(self, email: str | None) -> str | None:
+        cleaned = (email or "").strip().lower()
+        if not self.configured or not cleaned:
+            return None
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/rest/v1/profiles",
+                headers=self._headers(),
+                params={
+                    "select": "id,email",
+                    "email": f"ilike.{cleaned}",
+                    "limit": "2",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            exact = [r for r in rows if str(r.get("email") or "").strip().lower() == cleaned]
+            if len(exact) == 1:
+                return str(exact[0]["id"])
+            return None
+
     async def create_pending_payment(
         self,
         *,
@@ -218,11 +266,12 @@ class SupabaseServiceClient:
         plan_id: str | None = None,
         provider_order_id: str | None = None,
     ) -> str:
-        headers = {**self._headers(), "Prefer": "return=representation"}
+        headers = {**self._headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{self.base_url}/rest/v1/payments",
                 headers=headers,
+                params={"on_conflict": "provider_payment_id"},
                 json={
                     "user_id": user_id,
                     "amount": amount_paise,
@@ -250,11 +299,12 @@ class SupabaseServiceClient:
         cf_subscription_id: str | None = None,
         provider_plan_id: str | None = None,
     ) -> str:
-        headers = {**self._headers(), "Prefer": "return=representation"}
+        headers = {**self._headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{self.base_url}/rest/v1/subscriptions",
                 headers=headers,
+                params={"on_conflict": "provider_subscription_id"},
                 json={
                     "user_id": user_id,
                     "plan_id": plan_id,
@@ -277,15 +327,30 @@ class SupabaseServiceClient:
                 f"{self.base_url}/rest/v1/payments",
                 headers=self._headers(),
                 params={
-                    "select": "id,user_id,amount,currency,provider,provider_payment_id,kind,package_id,plan_id,status,credit_packages(name),plans(name)",
+                    "select": "id,user_id,amount,currency,provider,provider_payment_id,provider_order_id,kind,package_id,plan_id,status,credit_packages(name),plans(name)",
                     "user_id": f"eq.{user_id}",
-                    "provider_payment_id": f"eq.{provider_payment_id}",
+                    "or": f"(provider_payment_id.eq.{provider_payment_id},provider_order_id.eq.{provider_payment_id})",
                     "limit": "1",
                 },
             )
             resp.raise_for_status()
             rows = resp.json()
             return rows[0] if rows else None
+
+    async def get_order_owner_any_user(self, order_id: str) -> str | None:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/rest/v1/payments",
+                headers=self._headers(),
+                params={
+                    "select": "user_id",
+                    "or": f"(provider_payment_id.eq.{order_id},provider_order_id.eq.{order_id})",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return str(rows[0]["user_id"]) if rows and rows[0].get("user_id") else None
 
     async def get_subscription_for_user(
         self, user_id: str, subscription_id: str
@@ -304,6 +369,37 @@ class SupabaseServiceClient:
             resp.raise_for_status()
             rows = resp.json()
             return rows[0] if rows else None
+
+    async def get_subscription_owner_any_user(self, subscription_id: str) -> str | None:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            sub_resp = await client.get(
+                f"{self.base_url}/rest/v1/subscriptions",
+                headers=self._headers(),
+                params={
+                    "select": "user_id",
+                    "provider_subscription_id": f"eq.{subscription_id}",
+                    "limit": "1",
+                },
+            )
+            sub_resp.raise_for_status()
+            sub_rows = sub_resp.json()
+            if sub_rows and sub_rows[0].get("user_id"):
+                return str(sub_rows[0]["user_id"])
+
+            pay_resp = await client.get(
+                f"{self.base_url}/rest/v1/payments",
+                headers=self._headers(),
+                params={
+                    "select": "user_id",
+                    "or": f"(provider_payment_id.eq.{subscription_id},provider_order_id.eq.{subscription_id})",
+                    "limit": "1",
+                },
+            )
+            pay_resp.raise_for_status()
+            pay_rows = pay_resp.json()
+            if pay_rows and pay_rows[0].get("user_id"):
+                return str(pay_rows[0]["user_id"])
+            return None
 
     async def list_other_active_cashfree_subscriptions(
         self, user_id: str, exclude_subscription_id: str

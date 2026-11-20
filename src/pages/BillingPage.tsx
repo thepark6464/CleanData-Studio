@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { load as loadCashfree } from '@cashfreepayments/cashfree-js';
 import {
   AlertCircle,
@@ -8,6 +8,7 @@ import {
   CreditCard,
   Loader2,
   RefreshCw,
+  SearchCheck,
   ShieldCheck,
   XCircle,
 } from 'lucide-react';
@@ -28,11 +29,67 @@ interface BillingPageProps {
   onNavigate: (to: AppRoute) => void;
 }
 
+interface PendingCashfreeCheckout {
+  kind: 'credit_pack' | 'subscription';
+  order_id?: string | null;
+  subscription_id?: string | null;
+  item_name: string;
+  created_at: number;
+}
+
+const PENDING_CHECKOUT_STORAGE_KEY = 'cleandata_pending_cashfree_checkout';
+const PENDING_CHECKOUT_TTL_MS = 2 * 60 * 60 * 1000;
+
+function readPendingCheckout(): PendingCashfreeCheckout | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_CHECKOUT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingCashfreeCheckout>;
+    if (
+      !parsed ||
+      (parsed.kind !== 'credit_pack' && parsed.kind !== 'subscription') ||
+      typeof parsed.created_at !== 'number' ||
+      Date.now() - parsed.created_at > PENDING_CHECKOUT_TTL_MS
+    ) {
+      window.sessionStorage.removeItem(PENDING_CHECKOUT_STORAGE_KEY);
+      return null;
+    }
+    return parsed as PendingCashfreeCheckout;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingCheckout(pending: PendingCashfreeCheckout): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(PENDING_CHECKOUT_STORAGE_KEY, JSON.stringify(pending));
+  } catch {
+    // Ignore storage errors in restricted browser contexts
+  }
+}
+
+function clearPendingCheckout(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(PENDING_CHECKOUT_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function maskRefId(ref: string | null | undefined): string {
+  if (!ref) return '—';
+  if (ref.length <= 18) return ref;
+  return `${ref.slice(0, 10)}…${ref.slice(-6)}`;
 }
 
 function getSubscriptionBadge(status: string | undefined, planName: string) {
@@ -63,6 +120,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     activePlan,
     transactions,
     payments,
+    billingError,
     isDataLoading,
     refreshAccountData,
   } = useAuth();
@@ -72,9 +130,18 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [verifyingCheckout, setVerifyingCheckout] = useState<boolean>(false);
   const [verificationResult, setVerificationResult] = useState<CheckoutVerifyResponse | null>(null);
+  const [lastVerifiedTarget, setLastVerifiedTarget] = useState<{
+    kind: 'credit_pack' | 'subscription';
+    order_id?: string;
+    subscription_id?: string;
+  } | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);
   const [cancelingSub, setCancelingSub] = useState<boolean>(false);
   const [cancelNotice, setCancelNotice] = useState<string | null>(null);
+  const [showManualVerify, setShowManualVerify] = useState<boolean>(false);
+  const [manualSubId, setManualSubId] = useState<string>('');
+
+  const verifiedKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
@@ -85,55 +152,83 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
   const apiBase = getApiBaseUrl();
 
-  // Verify returning Cashfree redirect checkouts server-side (never grant from query params alone)
-  useEffect(() => {
-    if (typeof window === 'undefined' || !session?.access_token || !user) return;
-    const params = new URLSearchParams(window.location.search);
-    const orderId = params.get('order_id');
-    const subscriptionId = params.get('subscription_id');
-    const kindParam = params.get('kind');
+  const runServerVerification = useCallback(
+    async (target: {
+      kind: 'credit_pack' | 'subscription';
+      order_id?: string;
+      subscription_id?: string;
+    }) => {
+      if (!session?.access_token) return;
+      setVerifyingCheckout(true);
+      setCheckoutError(null);
+      setVerificationResult(null);
+      setLastVerifiedTarget(target);
 
-    if (!orderId && !subscriptionId) return;
-
-    const kind: 'credit_pack' | 'subscription' =
-      kindParam === 'subscription' || Boolean(subscriptionId) ? 'subscription' : 'credit_pack';
-
-    // Remove query parameters immediately so page reloads do not re-trigger checks
-    window.history.replaceState({}, '', window.location.pathname);
-
-    let cancelled = false;
-    setVerifyingCheckout(true);
-    setCheckoutError(null);
-    setVerificationResult(null);
-
-    const client = new CleanDataApiClient(apiBase, session.access_token);
-    void client
-      .verifyCheckout({
-        kind,
-        order_id: orderId || undefined,
-        subscription_id: subscriptionId || undefined,
-      })
-      .then(async (res) => {
-        if (cancelled) return;
+      const client = new CleanDataApiClient(apiBase, session.access_token);
+      try {
+        const res = await client.verifyCheckout(target);
         setVerificationResult(res);
+        if (res.status !== 'pending') {
+          clearPendingCheckout();
+        }
         await refreshAccountData();
-      })
-      .catch((err) => {
-        if (cancelled) return;
+      } catch (err) {
         if (err instanceof CleanDataApiError) {
           setCheckoutError(`${err.code}: ${err.message}`);
         } else {
           setCheckoutError('Unable to verify Cashfree payment status with server.');
         }
-      })
-      .finally(() => {
-        if (!cancelled) setVerifyingCheckout(false);
-      });
+      } finally {
+        setVerifyingCheckout(false);
+      }
+    },
+    [apiBase, session?.access_token, refreshAccountData],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, session?.access_token, user, refreshAccountData]);
+  // Verify returning Cashfree redirect checkouts or recovered pending sessions server-side
+  // (never grant from URL query parameters alone).
+  useEffect(() => {
+    if (typeof window === 'undefined' || !session?.access_token || !user) return;
+    const params = new URLSearchParams(window.location.search);
+    const orderId = params.get('order_id')?.trim() || undefined;
+    const subscriptionId =
+      (params.get('subscription_id') || params.get('sub_id'))?.trim() || undefined;
+    const kindParam = params.get('kind')?.trim() || undefined;
+
+    let target: {
+      kind: 'credit_pack' | 'subscription';
+      order_id?: string;
+      subscription_id?: string;
+    } | null = null;
+
+    if (orderId || subscriptionId) {
+      const kind: 'credit_pack' | 'subscription' =
+        kindParam === 'subscription' || Boolean(subscriptionId) ? 'subscription' : 'credit_pack';
+      target = {
+        kind,
+        order_id: orderId,
+        subscription_id: subscriptionId,
+      };
+      // Remove query parameters immediately so page reloads do not re-trigger checks
+      window.history.replaceState({}, '', window.location.pathname);
+    } else {
+      const pending = readPendingCheckout();
+      if (pending && (pending.order_id || pending.subscription_id)) {
+        target = {
+          kind: pending.kind,
+          order_id: pending.order_id || undefined,
+          subscription_id: pending.subscription_id || undefined,
+        };
+      }
+    }
+
+    if (!target) return;
+    const key = `${target.kind}:${target.subscription_id || target.order_id || ''}`;
+    if (verifiedKeysRef.current.has(key)) return;
+    verifiedKeysRef.current.add(key);
+
+    void runServerVerification(target);
+  }, [session?.access_token, user, runServerVerification]);
 
   const handleCheckout = async (kind: 'subscription' | 'credit_pack', itemName: string) => {
     setCheckoutError(null);
@@ -166,6 +261,14 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         customer_phone: normalizedDigits.length >= 10 ? normalizedDigits.slice(-10) : undefined,
       });
 
+      savePendingCheckout({
+        kind,
+        order_id: checkout.order_id,
+        subscription_id: checkout.subscription_id,
+        item_name: itemName,
+        created_at: Date.now(),
+      });
+
       const cashfree = await loadCashfree({ mode: checkout.cashfree_mode });
       if (!cashfree) {
         setCheckoutError('Cashfree Checkout SDK failed to initialize in this browser.');
@@ -185,15 +288,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           setCheckoutError(result.error.message || 'Cashfree checkout could not be completed.');
           return;
         }
-        if (result?.paymentDetails) {
-          setVerifyingCheckout(true);
-          const verified = await client.verifyCheckout({
+        if (result?.paymentDetails && checkout.order_id) {
+          await runServerVerification({
             kind: 'credit_pack',
             order_id: checkout.order_id,
           });
-          setVerificationResult(verified);
-          await refreshAccountData();
-          setVerifyingCheckout(false);
         }
       } else {
         if (!checkout.subscription_session_id) {
@@ -208,6 +307,14 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           setCheckoutError(result.error.message || 'Cashfree subscription checkout could not be completed.');
           return;
         }
+        // If Cashfree resolved inline without redirecting away, verify immediately
+        const targetSubId = checkout.subscription_id || checkout.order_id;
+        if (targetSubId) {
+          await runServerVerification({
+            kind: 'subscription',
+            subscription_id: targetSubId,
+          });
+        }
       }
     } catch (err) {
       if (err instanceof CleanDataApiError) {
@@ -220,6 +327,19 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     }
   };
 
+  const handleManualVerifySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = manualSubId.trim();
+    if (!cleaned) {
+      setCheckoutError('Enter your Cashfree Subscription ID (for example, cd_sub_...) to verify.');
+      return;
+    }
+    await runServerVerification({
+      kind: 'subscription',
+      subscription_id: cleaned,
+    });
+  };
+
   const handleCancelSubscription = async () => {
     if (!session?.access_token) return;
     setCancelingSub(true);
@@ -230,6 +350,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
       const res = await client.cancelSubscription();
       setShowCancelConfirm(false);
       setCancelNotice(res.message);
+      clearPendingCheckout();
       await refreshAccountData();
     } catch (err) {
       if (err instanceof CleanDataApiError) {
@@ -278,6 +399,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     activePlan?.status === 'active' &&
     Boolean(activePlan?.provider_subscription_id);
   const subBadge = getSubscriptionBadge(activePlan?.status, currentPlanName);
+  const pendingCheckTarget =
+    lastVerifiedTarget ??
+    (activePlan?.provider_subscription_id && activePlan.status !== 'active'
+      ? { kind: 'subscription' as const, subscription_id: activePlan.provider_subscription_id }
+      : null);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-8 sm:px-6 sm:py-10">
@@ -313,6 +439,29 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
+      {billingError && (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+            <div>
+              <p className="font-semibold">Unable to synchronize live billing status from backend</p>
+              <p className="mt-0.5 text-amber-900">{billingError}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshAccountData()}
+            disabled={isDataLoading}
+            className="shrink-0 rounded-md border border-amber-400 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100 cursor-pointer disabled:opacity-50"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Split Credit Wallet Summary */}
       <section aria-label="Wallet balances" className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2.5">
@@ -326,6 +475,12 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           <p className="font-mono text-xs text-slate-600 tabular-nums">
             {formatInrFromPaise(currentPlanPrice)}/mo · {activePlan?.monthly_credits ?? 0} monthly credits
           </p>
+          {currentPlanName !== 'Free' && activePlan?.current_period_end && (
+            <p className="font-mono text-[11px] text-slate-500 tabular-nums">
+              {activePlan.status === 'canceled' ? 'Ended / expires: ' : 'Next cycle: '}
+              {formatDate(activePlan.current_period_end)}
+            </p>
+          )}
 
           {canCancelActiveSub && !showCancelConfirm && (
             <button
@@ -421,34 +576,48 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
               : 'border-red-200 bg-red-50 text-red-950'
           }`}
         >
-          <div className="flex items-center gap-2 font-semibold">
-            {verificationResult.status === 'paid' || verificationResult.status === 'active' ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-            ) : verificationResult.status === 'pending' ? (
-              <Clock className="h-4 w-4 text-amber-700" aria-hidden="true" />
-            ) : (
-              <XCircle className="h-4 w-4 text-red-700" aria-hidden="true" />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 font-semibold">
+              {verificationResult.status === 'paid' || verificationResult.status === 'active' ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+              ) : verificationResult.status === 'pending' ? (
+                <Clock className="h-4 w-4 text-amber-700" aria-hidden="true" />
+              ) : (
+                <XCircle className="h-4 w-4 text-red-700" aria-hidden="true" />
+              )}
+              <span>
+                {verificationResult.status === 'paid'
+                  ? `Successful — ${verificationResult.item_name ?? 'Credit Pack'}`
+                  : verificationResult.status === 'active'
+                  ? `Subscription active — ${verificationResult.item_name ?? 'Monthly Plan'}`
+                  : verificationResult.status === 'pending'
+                  ? 'Pending confirmation'
+                  : verificationResult.status === 'canceled'
+                  ? 'Cancelled'
+                  : verificationResult.status === 'expired'
+                  ? 'Subscription expired'
+                  : 'Failed'}
+              </span>
+            </div>
+
+            {verificationResult.status === 'pending' && pendingCheckTarget && (
+              <button
+                type="button"
+                disabled={verifyingCheckout}
+                onClick={() => void runServerVerification(pendingCheckTarget)}
+                className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-950 hover:bg-amber-100 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${verifyingCheckout ? 'animate-spin' : ''}`} aria-hidden="true" />
+                <span>Check Status Now</span>
+              </button>
             )}
-            <span>
-              {verificationResult.status === 'paid'
-                ? `Successful — ${verificationResult.item_name ?? 'Credit Pack'}`
-                : verificationResult.status === 'active'
-                ? `Subscription active — ${verificationResult.item_name ?? 'Monthly Plan'}`
-                : verificationResult.status === 'pending'
-                ? 'Pending confirmation'
-                : verificationResult.status === 'canceled'
-                ? 'Cancelled'
-                : verificationResult.status === 'expired'
-                ? 'Subscription expired'
-                : 'Failed'}
-            </span>
           </div>
           <p>{verificationResult.message}</p>
         </div>
       )}
 
-      {/* Optional Mobile Number for Cashfree Checkout Prefill / UPI Mandate */}
-      <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+      {/* Optional Mobile Number + Cashfree Subscription Reconcile */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="font-display text-sm font-semibold text-slate-950">
@@ -470,6 +639,45 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
             className="w-full sm:w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           />
         </div>
+
+        <div className="border-t border-slate-100 pt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-slate-600">
+            Completed a Cashfree subscription checkout and don&apos;t see it reflected yet?
+          </p>
+          <button
+            type="button"
+            onClick={() => setShowManualVerify((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-800 cursor-pointer self-start sm:self-auto"
+          >
+            <SearchCheck className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{showManualVerify ? 'Hide Subscription Check' : 'Verify Cashfree Subscription ID'}</span>
+          </button>
+        </div>
+
+        {showManualVerify && (
+          <form onSubmit={(e) => void handleManualVerifySubmit(e)} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              type="text"
+              value={manualSubId}
+              onChange={(e) => setManualSubId(e.target.value)}
+              placeholder="Enter Cashfree subscription ID (e.g. cd_sub_...)"
+              aria-label="Cashfree subscription ID to verify"
+              className="w-full sm:flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            />
+            <button
+              type="submit"
+              disabled={verifyingCheckout}
+              className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+            >
+              {verifyingCheckout ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              <span>Verify &amp; Sync</span>
+            </button>
+          </form>
+        )}
       </section>
 
       {/* Paid Subscriptions (Cashfree Subscriptions) */}
@@ -668,7 +876,8 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
             <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
                 <tr>
-                  <th className="px-4 py-3 font-medium">Type</th>
+                  <th className="px-4 py-3 font-medium">Item / Type</th>
+                  <th className="px-4 py-3 font-medium">Reference</th>
                   <th className="px-4 py-3 font-medium">Provider</th>
                   <th className="px-4 py-3 font-medium text-right">Amount</th>
                   <th className="px-4 py-3 font-medium">Status</th>
@@ -678,7 +887,15 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
               <tbody className="divide-y divide-slate-100">
                 {payments.map((p) => (
                   <tr key={p.id}>
-                    <td className="px-4 py-3 font-mono text-slate-900">{p.kind || 'payment'}</td>
+                    <td className="px-4 py-3 text-slate-900">
+                      <span className="font-medium">{p.item_name || (p.kind === 'subscription' ? 'Subscription' : 'Credit Pack')}</span>
+                      <span className="ml-1.5 font-mono text-[11px] text-slate-500">
+                        ({p.kind || 'payment'})
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[11px] text-slate-600" title={p.provider_payment_id || undefined}>
+                      {maskRefId(p.provider_payment_id)}
+                    </td>
                     <td className="px-4 py-3 capitalize text-slate-700">{p.provider || 'cashfree'}</td>
                     <td className="px-4 py-3 text-right font-mono font-semibold tabular-nums text-slate-900">
                       {formatInrFromPaise(p.amount)}
