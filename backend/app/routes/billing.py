@@ -1,6 +1,8 @@
 import json
 import uuid
+from urllib.parse import parse_qs, quote
 from fastapi import APIRouter, Request
+from fastapi.responses import RedirectResponse
 
 from app.auth.jwt_auth import require_jwt_user
 from app.database import SupabaseServiceClient
@@ -513,6 +515,29 @@ async def verify_checkout(
         subscription=summary.subscription,
         message=msg,
     )
+
+
+@router.post("/billing/subscription/return")
+async def cashfree_subscription_return(request: Request) -> RedirectResponse:
+    """
+    Cashfree Subscriptions posts form data to the configured return URL.
+    Convert that POST into a same-site GET so the authenticated billing page
+    can call /billing/verify and activate the subscription for its owner.
+    """
+    raw_body = await request.body()
+    form = parse_qs(raw_body.decode("utf-8", errors="replace"))
+    subscription_id = (
+        (form.get("subscriptionId") or form.get("subscription_id") or [""])[0].strip()
+    )
+    origin = request.app.state.settings.resolved_frontend_origin.rstrip("/")
+    if not subscription_id:
+        target = f"{origin}/dashboard/billing?kind=subscription&return_status=missing_id"
+    else:
+        target = (
+            f"{origin}/dashboard/billing?kind=subscription"
+            f"&subscription_id={quote(subscription_id, safe='')}"
+        )
+    return RedirectResponse(url=target, status_code=303)
 
 
 @router.post("/billing/subscription/cancel", response_model=SubscriptionCancelResponse)
