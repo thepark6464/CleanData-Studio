@@ -27,15 +27,40 @@ class ApiServiceError(Exception):
         self.message = message
 
 
+_LOG_SENSITIVE_KEY_RE = re.compile(
+    r"(^secret$|_secret$|^token$|_token$|^password$|_password$|^passphrase$|^authorization$|"
+    r"^api_key$|^secret_key$|^service_role_key$|^client_secret$|^webhook_secret$|^jwt_secret$|"
+    r"^credential$|^credentials$|^signature$|^raw_rows$|^file_bytes$|^payload$)",
+    re.I,
+)
+_INLINE_TOKEN_RE = re.compile(
+    r"(Bearer\s+[A-Za-z0-9._\-~+/]+=*|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*|cd_live_[A-Za-z0-9_-]+)",
+    re.I,
+)
+
+
+def _sanitize_log_value(key: str, value: Any) -> Any:
+    if _LOG_SENSITIVE_KEY_RE.search(key):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(k): _sanitize_log_value(str(k), v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_log_value(key, item) for item in value]
+    if isinstance(value, str):
+        return _INLINE_TOKEN_RE.sub("[REDACTED]", value)
+    return value
+
+
 def log_event(event: str, request_id: str, **meta: Any) -> None:
     """Emit structured JSON metadata logs. Never log raw row data, file contents, or secrets."""
     safe_meta = {
-        k: v
+        k: _sanitize_log_value(k, v)
         for k, v in meta.items()
         if k not in {"raw_rows", "file_bytes", "api_key", "secret", "authorization", "payload"}
     }
     payload = {"event": event, "request_id": request_id, **safe_meta}
     logger.info(json.dumps(payload, default=str))
+
 
 
 def is_formula_trigger(value: str) -> bool:

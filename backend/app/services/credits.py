@@ -65,7 +65,7 @@ class _WalletState:
     subscription_expires_at: dt.datetime | None = None
     purchased_expires_at: dt.datetime | None = None
     plan_name: str = "Free"
-    subscription_status: str = "active"
+    subscription_status: str = "free"
     subscription_provider: str = "system"
     provider_subscription_id: str | None = None
     cancel_at_period_end: bool = False
@@ -735,6 +735,7 @@ class InMemoryCreditStore:
         return {"status": "ignored", "subscription_id": subscription_id}
 
     def get_summary(self, user_id: str) -> BillingSummaryResponse:
+        self.expire_credits()
         w = self.ensure_wallet(user_id)
         plan = PLAN_CATALOG.get(w.plan_name, PLAN_CATALOG["Free"])
         user_txs = [

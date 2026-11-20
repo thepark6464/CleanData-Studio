@@ -3,7 +3,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.auth.jwt_auth import require_jwt_or_api_key_user, require_jwt_user
-from app.database import SupabaseServiceClient
+from app.database import SupabaseOperationError, SupabaseServiceClient, map_billing_db_error
 from app.services.api_keys import ApiKeyService
 from app.utils.security import ApiServiceError, log_event
 
@@ -110,18 +110,20 @@ async def get_credits(request: Request) -> dict:
     if db.configured:
         try:
             summary = await db.get_billing_summary(user.user_id)
-        except (httpx.HTTPError, ValueError) as exc:
-            log_event(
-                "credits_summary_db_error",
-                request_id,
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/credits",
+                request_id=request_id,
                 user_id=user.user_id,
-                error_type=type(exc).__name__,
-            )
-            raise ApiServiceError(
-                503,
-                "BILLING_DATABASE_UNAVAILABLE",
-                "Unable to load credit wallet from database. Please retry.",
+                default_operation="get_billing_summary",
             ) from exc
+    elif settings.is_vercel_runtime or settings.environment not in {"test", "development"}:
+        raise ApiServiceError(
+            503,
+            "BILLING_DATABASE_NOT_CONFIGURED",
+            "Persistent billing database (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY) is not configured on the backend.",
+        )
     else:
         summary = request.app.state.credits.get_summary(user.user_id)
     return {

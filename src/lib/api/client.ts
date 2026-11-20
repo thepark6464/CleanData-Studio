@@ -41,6 +41,7 @@ export function getApiBaseUrl(): string {
 }
 
 async function handleJsonResponse<T>(resp: Response): Promise<T> {
+  const headerReqId = resp.headers?.get?.('x-request-id') || undefined;
   const data = await resp.json().catch(() => null);
   if (!resp.ok) {
     const envelope = data as ApiErrorEnvelope | null;
@@ -49,7 +50,7 @@ async function handleJsonResponse<T>(resp: Response): Promise<T> {
         resp.status,
         envelope.error.code,
         envelope.error.message,
-        envelope.error.request_id,
+        envelope.error.request_id || headerReqId,
       );
     }
     const detail =
@@ -58,8 +59,9 @@ async function handleJsonResponse<T>(resp: Response): Promise<T> {
         : null;
     throw new CleanDataApiError(
       resp.status,
-      'HTTP_ERROR',
+      resp.status >= 500 ? `HTTP_${resp.status}` : 'HTTP_ERROR',
       detail ? `Server returned HTTP ${resp.status}: ${detail}` : `Server returned HTTP ${resp.status}.`,
+      headerReqId,
     );
   }
   return data as T;

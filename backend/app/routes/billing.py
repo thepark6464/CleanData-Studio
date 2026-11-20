@@ -1,10 +1,11 @@
 import json
 import uuid
+from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 
 from app.auth.jwt_auth import require_jwt_user
-from app.database import SupabaseServiceClient
+from app.database import SupabaseOperationError, SupabaseServiceClient, map_billing_db_error
 from app.models import (
     BillingSummaryResponse,
     CheckoutCreateRequest,
@@ -30,6 +31,16 @@ _PROVIDER_PLAN_ID_MAP: dict[str, PlanSpec] = {
     for name, spec in PLAN_CATALOG.items()
     if spec.monthly_price_paise > 0
 }
+
+
+def _extract_relation_name(rel: Any) -> str | None:
+    if isinstance(rel, dict):
+        name = rel.get("name")
+        return str(name) if name else None
+    if isinstance(rel, list) and rel and isinstance(rel[0], dict):
+        name = rel[0].get("name")
+        return str(name) if name else None
+    return None
 
 
 def _resolve_adapter(request: Request) -> PaymentProviderAdapter:
@@ -337,19 +348,13 @@ async def get_billing_summary(request: Request) -> BillingSummaryResponse:
     if db is not None:
         try:
             return await db.get_billing_summary(user.user_id)
-        except (httpx.HTTPError, ValueError) as exc:
-            status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-            log_event(
-                "billing_summary_db_error",
-                request_id,
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/summary",
+                request_id=request_id,
                 user_id=user.user_id,
-                error_type=type(exc).__name__,
-                db_status_code=status_code,
-            )
-            raise ApiServiceError(
-                503,
-                "BILLING_DATABASE_UNAVAILABLE",
-                "Unable to load billing summary from database. Please retry.",
+                default_operation="get_billing_summary",
             ) from exc
     return request.app.state.credits.get_summary(user.user_id)
 
@@ -382,12 +387,13 @@ async def create_checkout(
             try:
                 await db.ensure_user_billing_profile(user.user_id, user.email)
                 row = await db.get_catalog_package(payload.item_name)
-            except httpx.HTTPError as exc:
-                log_event("checkout_db_lookup_error", request_id, user_id=user.user_id)
-                raise ApiServiceError(
-                    503,
-                    "BILLING_DATABASE_UNAVAILABLE",
-                    "Unable to access billing database to initialize checkout.",
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/checkout",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="checkout_catalog_package_lookup",
                 ) from exc
             if not row:
                 raise ApiServiceError(
@@ -423,12 +429,13 @@ async def create_checkout(
                     package_id=package_id,
                     plan_id=None,
                 )
-            except httpx.HTTPError as exc:
-                log_event("checkout_db_persist_error", request_id, user_id=user.user_id, kind="credit_pack")
-                raise ApiServiceError(
-                    503,
-                    "BILLING_DATABASE_UNAVAILABLE",
-                    "Cashfree order created, but failed to persist pending payment record. Please retry.",
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/checkout",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="create_pending_payment",
                 ) from exc
         else:
             payment_id = request.app.state.credits.create_pending_payment(
@@ -479,12 +486,13 @@ async def create_checkout(
         try:
             await db.ensure_user_billing_profile(user.user_id, user.email)
             row = await db.get_catalog_plan(payload.item_name)
-        except httpx.HTTPError as exc:
-            log_event("checkout_db_lookup_error", request_id, user_id=user.user_id, kind="subscription")
-            raise ApiServiceError(
-                503,
-                "BILLING_DATABASE_UNAVAILABLE",
-                "Unable to access billing database to initialize subscription checkout.",
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/checkout",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="checkout_catalog_plan_lookup",
             ) from exc
         if not row:
             raise ApiServiceError(
@@ -528,12 +536,13 @@ async def create_checkout(
                 cf_subscription_id=session.cf_subscription_id,
                 provider_plan_id=session.provider_plan_id,
             )
-        except httpx.HTTPError as exc:
-            log_event("checkout_db_persist_error", request_id, user_id=user.user_id, kind="subscription")
-            raise ApiServiceError(
-                503,
-                "BILLING_DATABASE_UNAVAILABLE",
-                "Unable to persist subscription checkout record in Supabase. Please retry.",
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/checkout",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="create_pending_subscription",
             ) from exc
     else:
         payment_id = request.app.state.credits.create_pending_payment(
@@ -602,8 +611,17 @@ async def verify_checkout(
             )
 
         if db is not None:
-            owned = await db.get_payment_for_user(user.user_id, order_id)
-            owner_any = user.user_id if owned else await db.get_order_owner_any_user(order_id)
+            try:
+                owned = await db.get_payment_for_user(user.user_id, order_id)
+                owner_any = user.user_id if owned else await db.get_order_owner_any_user(order_id)
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/verify",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="verify_get_payment",
+                ) from exc
         else:
             owned = request.app.state.credits.get_payment_for_user(user.user_id, order_id)
             owner_any = (
@@ -626,15 +644,24 @@ async def verify_checkout(
                 raise ApiServiceError(
                     404, "ORDER_NOT_FOUND", "Payment order not found for your account."
                 )
-            item_name, expected_paise, expected_currency = await _reconcile_order_record(
-                db=db,
-                request=request,
-                adapter=adapter,
-                user_id=user.user_id,
-                user_email=user.email,
-                order_id=order_id,
-                verification=verification,
-            )
+            try:
+                item_name, expected_paise, expected_currency = await _reconcile_order_record(
+                    db=db,
+                    request=request,
+                    adapter=adapter,
+                    user_id=user.user_id,
+                    user_email=user.email,
+                    order_id=order_id,
+                    verification=verification,
+                )
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/verify",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="reconcile_order_record",
+                ) from exc
             owned_status = "pending"
             log_event(
                 "order_record_reconciled",
@@ -650,7 +677,7 @@ async def verify_checkout(
                 )
             item_name = (
                 owned.get("item_name")
-                or (owned.get("credit_packages") or {}).get("name")
+                or _extract_relation_name(owned.get("credit_packages"))
                 or None
             )
             expected_paise = int(owned["amount"] if db is not None else owned["amount_paise"])
@@ -673,16 +700,25 @@ async def verify_checkout(
                 "currency": verification.currency,
             }
             if db is not None:
-                rpc_result = await db.rpc(
-                    "process_payment_event",
-                    {
-                        "p_provider": adapter.provider_name,
-                        "p_event_id": event_id,
-                        "p_provider_payment_id": order_id,
-                        "p_status": "paid",
-                        "p_payload_meta": meta,
-                    },
-                )
+                try:
+                    rpc_result = await db.rpc(
+                        "process_payment_event",
+                        {
+                            "p_provider": adapter.provider_name,
+                            "p_event_id": event_id,
+                            "p_provider_payment_id": order_id,
+                            "p_status": "paid",
+                            "p_payload_meta": meta,
+                        },
+                    )
+                except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                    raise map_billing_db_error(
+                        exc,
+                        endpoint="/api/v1/billing/verify",
+                        request_id=request_id,
+                        user_id=user.user_id,
+                        default_operation="rpc_process_payment_event",
+                    ) from exc
             else:
                 rpc_result = request.app.state.credits.process_payment_event(
                     provider=adapter.provider_name,
@@ -706,11 +742,19 @@ async def verify_checkout(
                     "Unable to reconcile verified Cashfree payment with database.",
                 )
 
-            summary = (
-                await db.get_billing_summary(user.user_id)
-                if db is not None
-                else request.app.state.credits.get_summary(user.user_id)
-            )
+            if db is not None:
+                try:
+                    summary = await db.get_billing_summary(user.user_id)
+                except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                    raise map_billing_db_error(
+                        exc,
+                        endpoint="/api/v1/billing/verify",
+                        request_id=request_id,
+                        user_id=user.user_id,
+                        default_operation="get_billing_summary",
+                    ) from exc
+            else:
+                summary = request.app.state.credits.get_summary(user.user_id)
             log_event(
                 "billing_order_verified",
                 request_id,
@@ -731,17 +775,26 @@ async def verify_checkout(
         if verification.order_status == "EXPIRED":
             event_id = f"verify:order:{order_id}:expired"
             if db is not None:
-                await db.rpc(
-                    "process_payment_event",
-                    {
-                        "p_provider": adapter.provider_name,
-                        "p_event_id": event_id,
-                        "p_provider_payment_id": order_id,
-                        "p_status": "failed",
-                        "p_payload_meta": {"event": "ORDER_VERIFY_EXPIRED"},
-                    },
-                )
-                summary = await db.get_billing_summary(user.user_id)
+                try:
+                    await db.rpc(
+                        "process_payment_event",
+                        {
+                            "p_provider": adapter.provider_name,
+                            "p_event_id": event_id,
+                            "p_provider_payment_id": order_id,
+                            "p_status": "failed",
+                            "p_payload_meta": {"event": "ORDER_VERIFY_EXPIRED"},
+                        },
+                    )
+                    summary = await db.get_billing_summary(user.user_id)
+                except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                    raise map_billing_db_error(
+                        exc,
+                        endpoint="/api/v1/billing/verify",
+                        request_id=request_id,
+                        user_id=user.user_id,
+                        default_operation="rpc_process_payment_event",
+                    ) from exc
             else:
                 request.app.state.credits.process_payment_event(
                     provider=adapter.provider_name,
@@ -760,11 +813,19 @@ async def verify_checkout(
                 message="Payment order expired or failed before completion.",
             )
 
-        summary = (
-            await db.get_billing_summary(user.user_id)
-            if db is not None
-            else request.app.state.credits.get_summary(user.user_id)
-        )
+        if db is not None:
+            try:
+                summary = await db.get_billing_summary(user.user_id)
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/verify",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="get_billing_summary",
+                ) from exc
+        else:
+            summary = request.app.state.credits.get_summary(user.user_id)
         return CheckoutVerifyResponse(
             kind="credit_pack",
             status="paid" if owned_status == "paid" else "pending",
@@ -788,13 +849,22 @@ async def verify_checkout(
         )
 
     if db is not None:
-        owned_sub = await db.get_subscription_for_user(user.user_id, sub_id)
-        owner_any = (
-            user.user_id
-            if owned_sub
-            else await db.get_subscription_owner_any_user(sub_id)
-        )
-        item_name = ((owned_sub or {}).get("plans") or {}).get("name")
+        try:
+            owned_sub = await db.get_subscription_for_user(user.user_id, sub_id)
+            owner_any = (
+                user.user_id
+                if owned_sub
+                else await db.get_subscription_owner_any_user(sub_id)
+            )
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/verify",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="verify_get_subscription",
+            ) from exc
+        item_name = _extract_relation_name((owned_sub or {}).get("plans"))
     else:
         owned_sub = request.app.state.credits.get_subscription_for_user(user.user_id, sub_id)
         owner_any = (
@@ -820,15 +890,24 @@ async def verify_checkout(
             user_id=user.user_id,
             user_email=user.email,
         )
-        item_name = await _reconcile_subscription_record(
-            db=db,
-            request=request,
-            adapter=adapter,
-            user_id=user.user_id,
-            user_email=user.email,
-            sub_id=sub_id,
-            verification=verification,
-        )
+        try:
+            item_name = await _reconcile_subscription_record(
+                db=db,
+                request=request,
+                adapter=adapter,
+                user_id=user.user_id,
+                user_email=user.email,
+                sub_id=sub_id,
+                verification=verification,
+            )
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/verify",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="reconcile_subscription_record",
+            ) from exc
         log_event(
             "subscription_record_reconciled",
             request_id,
@@ -860,34 +939,52 @@ async def verify_checkout(
                 )
 
         # Cancel any prior active paid subscription on Cashfree before finalizing activation
-        await _cancel_superseded_cashfree_subscriptions(
-            db=db,
-            request=request,
-            adapter=adapter,
-            user_id=user.user_id,
-            keep_subscription_id=sub_id,
-            request_id=request_id,
-        )
+        try:
+            await _cancel_superseded_cashfree_subscriptions(
+                db=db,
+                request=request,
+                adapter=adapter,
+                user_id=user.user_id,
+                keep_subscription_id=sub_id,
+                request_id=request_id,
+            )
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/verify",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="list_other_subscriptions",
+            ) from exc
         event_id = f"verify:sub:{sub_id}:active"
         if db is not None:
-            rpc_result = await db.rpc(
-                "process_subscription_event",
-                {
-                    "p_provider": adapter.provider_name,
-                    "p_event_id": event_id,
-                    "p_subscription_id": sub_id,
-                    "p_event_kind": "activated",
-                    "p_provider_payment_id": verification.cf_payment_id,
-                    "p_amount_paise": verification.amount_paise,
-                    "p_currency": verification.currency,
-                    "p_period_end": verification.next_schedule_date,
-                    "p_payload_meta": {
-                        "event": "SUBSCRIPTION_VERIFY_ACTIVE",
-                        "cf_subscription_id": verification.cf_subscription_id,
-                        "provider_plan_id": verification.plan_id,
+            try:
+                rpc_result = await db.rpc(
+                    "process_subscription_event",
+                    {
+                        "p_provider": adapter.provider_name,
+                        "p_event_id": event_id,
+                        "p_subscription_id": sub_id,
+                        "p_event_kind": "activated",
+                        "p_provider_payment_id": verification.cf_payment_id,
+                        "p_amount_paise": verification.amount_paise,
+                        "p_currency": verification.currency,
+                        "p_period_end": verification.next_schedule_date,
+                        "p_payload_meta": {
+                            "event": "SUBSCRIPTION_VERIFY_ACTIVE",
+                            "cf_subscription_id": verification.cf_subscription_id,
+                            "provider_plan_id": verification.plan_id,
+                        },
                     },
-                },
-            )
+                )
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/verify",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="rpc_process_subscription_event",
+                ) from exc
         else:
             rpc_result = request.app.state.credits.process_subscription_event(
                 provider=adapter.provider_name,
@@ -913,11 +1010,19 @@ async def verify_checkout(
                 "Unable to reconcile verified Cashfree subscription with database.",
             )
 
-        summary = (
-            await db.get_billing_summary(user.user_id)
-            if db is not None
-            else request.app.state.credits.get_summary(user.user_id)
-        )
+        if db is not None:
+            try:
+                summary = await db.get_billing_summary(user.user_id)
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/verify",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="get_billing_summary",
+                ) from exc
+        else:
+            summary = request.app.state.credits.get_summary(user.user_id)
         log_event(
             "billing_subscription_verified",
             request_id,
@@ -956,16 +1061,25 @@ async def verify_checkout(
     if event_kind:
         event_id = f"verify:sub:{sub_id}:{event_kind}"
         if db is not None:
-            await db.rpc(
-                "process_subscription_event",
-                {
-                    "p_provider": adapter.provider_name,
-                    "p_event_id": event_id,
-                    "p_subscription_id": sub_id,
-                    "p_event_kind": event_kind,
-                    "p_payload_meta": {"event": f"SUBSCRIPTION_VERIFY_{cf_status}"},
-                },
-            )
+            try:
+                await db.rpc(
+                    "process_subscription_event",
+                    {
+                        "p_provider": adapter.provider_name,
+                        "p_event_id": event_id,
+                        "p_subscription_id": sub_id,
+                        "p_event_kind": event_kind,
+                        "p_payload_meta": {"event": f"SUBSCRIPTION_VERIFY_{cf_status}"},
+                    },
+                )
+            except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                raise map_billing_db_error(
+                    exc,
+                    endpoint="/api/v1/billing/verify",
+                    request_id=request_id,
+                    user_id=user.user_id,
+                    default_operation="rpc_process_subscription_event",
+                ) from exc
         else:
             request.app.state.credits.process_subscription_event(
                 provider=adapter.provider_name,
@@ -974,11 +1088,19 @@ async def verify_checkout(
                 event_kind=event_kind,
             )
 
-    summary = (
-        await db.get_billing_summary(user.user_id)
-        if db is not None
-        else request.app.state.credits.get_summary(user.user_id)
-    )
+    if db is not None:
+        try:
+            summary = await db.get_billing_summary(user.user_id)
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/verify",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="get_billing_summary",
+            ) from exc
+    else:
+        summary = request.app.state.credits.get_summary(user.user_id)
     return CheckoutVerifyResponse(
         kind="subscription",
         status=mapped_status,
@@ -997,7 +1119,16 @@ async def cancel_active_subscription(request: Request) -> SubscriptionCancelResp
     db = _require_billing_db(request)
 
     if db is not None:
-        active_sub = await db.get_latest_active_cashfree_subscription(user.user_id)
+        try:
+            active_sub = await db.get_latest_active_cashfree_subscription(user.user_id)
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/subscription/cancel",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="select_latest_active_subscription",
+            ) from exc
         if not active_sub or not active_sub.get("provider_subscription_id"):
             raise ApiServiceError(
                 404,
@@ -1005,7 +1136,7 @@ async def cancel_active_subscription(request: Request) -> SubscriptionCancelResp
                 "No active Cashfree subscription found on your account.",
             )
         sub_id = str(active_sub["provider_subscription_id"])
-        plan_name = str(((active_sub.get("plans") or {}).get("name")) or "Free")
+        plan_name = _extract_relation_name(active_sub.get("plans")) or "Free"
     else:
         summary = request.app.state.credits.get_summary(user.user_id)
         sub_id = summary.subscription.provider_subscription_id or ""
@@ -1021,16 +1152,25 @@ async def cancel_active_subscription(request: Request) -> SubscriptionCancelResp
     event_id = f"user_cancel:{sub_id}:{uuid.uuid4().hex[:8]}"
 
     if db is not None:
-        await db.rpc(
-            "process_subscription_event",
-            {
-                "p_provider": adapter.provider_name,
-                "p_event_id": event_id,
-                "p_subscription_id": sub_id,
-                "p_event_kind": "canceled",
-                "p_payload_meta": {"event": "USER_INITIATED_CANCEL"},
-            },
-        )
+        try:
+            await db.rpc(
+                "process_subscription_event",
+                {
+                    "p_provider": adapter.provider_name,
+                    "p_event_id": event_id,
+                    "p_subscription_id": sub_id,
+                    "p_event_kind": "canceled",
+                    "p_payload_meta": {"event": "USER_INITIATED_CANCEL"},
+                },
+            )
+        except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+            raise map_billing_db_error(
+                exc,
+                endpoint="/api/v1/billing/subscription/cancel",
+                request_id=request_id,
+                user_id=user.user_id,
+                default_operation="rpc_process_subscription_event",
+            ) from exc
     else:
         request.app.state.credits.process_subscription_event(
             provider=adapter.provider_name,
@@ -1104,20 +1244,28 @@ async def handle_payment_webhook(request: Request) -> dict:
             result: dict = {"status": "ignored", "reason": "missing_subscription_id"}
         else:
             if db is not None:
-                result = await db.rpc(
-                    "process_subscription_event",
-                    {
-                        "p_provider": adapter.provider_name,
-                        "p_event_id": parsed.event_id,
-                        "p_subscription_id": parsed.subscription_id,
-                        "p_event_kind": parsed.status,
-                        "p_provider_payment_id": parsed.cf_payment_id,
-                        "p_amount_paise": parsed.amount_paise,
-                        "p_currency": parsed.currency,
-                        "p_period_end": parsed.next_schedule_date,
-                        "p_payload_meta": parsed.payload_meta,
-                    },
-                )
+                try:
+                    result = await db.rpc(
+                        "process_subscription_event",
+                        {
+                            "p_provider": adapter.provider_name,
+                            "p_event_id": parsed.event_id,
+                            "p_subscription_id": parsed.subscription_id,
+                            "p_event_kind": parsed.status,
+                            "p_provider_payment_id": parsed.cf_payment_id,
+                            "p_amount_paise": parsed.amount_paise,
+                            "p_currency": parsed.currency,
+                            "p_period_end": parsed.next_schedule_date,
+                            "p_payload_meta": parsed.payload_meta,
+                        },
+                    )
+                except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                    raise map_billing_db_error(
+                        exc,
+                        endpoint="/api/v1/webhooks/payments",
+                        request_id=request_id,
+                        default_operation="rpc_process_subscription_event",
+                    ) from exc
             else:
                 result = request.app.state.credits.process_subscription_event(
                     provider=adapter.provider_name,
@@ -1205,16 +1353,24 @@ async def handle_payment_webhook(request: Request) -> dict:
             result = {"status": "ignored", "reason": "missing_order_id"}
         else:
             if db is not None:
-                result = await db.rpc(
-                    "process_payment_event",
-                    {
-                        "p_provider": adapter.provider_name,
-                        "p_event_id": parsed.event_id,
-                        "p_provider_payment_id": parsed.provider_payment_id,
-                        "p_status": parsed.status,
-                        "p_payload_meta": parsed.payload_meta,
-                    },
-                )
+                try:
+                    result = await db.rpc(
+                        "process_payment_event",
+                        {
+                            "p_provider": adapter.provider_name,
+                            "p_event_id": parsed.event_id,
+                            "p_provider_payment_id": parsed.provider_payment_id,
+                            "p_status": parsed.status,
+                            "p_payload_meta": parsed.payload_meta,
+                        },
+                    )
+                except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                    raise map_billing_db_error(
+                        exc,
+                        endpoint="/api/v1/webhooks/payments",
+                        request_id=request_id,
+                        default_operation="rpc_process_payment_event",
+                    ) from exc
             else:
                 result = request.app.state.credits.process_payment_event(
                     provider=adapter.provider_name,

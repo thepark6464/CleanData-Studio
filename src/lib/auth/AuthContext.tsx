@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { getSupabaseClient, isSupabaseConfigured } from '../supabase/client';
-import { CleanDataApiClient, getApiBaseUrl } from '../api/client';
+import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../api/client';
 import type { SupportedPhoneRegion } from '../cleaner/types';
 
 export interface UserPreferences {
@@ -95,6 +95,15 @@ export interface PaymentRecord {
   created_at: string;
 }
 
+export type BillingSyncStatus = 'idle' | 'loading' | 'loaded' | 'error';
+
+export interface BillingErrorInfo {
+  code: string;
+  message: string;
+  status?: number;
+  requestId?: string;
+}
+
 interface AuthContextValue {
   isConfigured: boolean;
   isLoading: boolean;
@@ -102,6 +111,8 @@ interface AuthContextValue {
   authCallbackError: string | null;
   clearAuthCallbackError: () => void;
   billingError: string | null;
+  billingErrorDetail: BillingErrorInfo | null;
+  billingStatus: BillingSyncStatus;
   session: Session | null;
   user: User | null;
   profile: UserProfile | null;
@@ -175,6 +186,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [transactions, setTransactions] = useState<CreditTransactionRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingErrorDetail, setBillingErrorDetail] = useState<BillingErrorInfo | null>(null);
+  const [billingStatus, setBillingStatus] = useState<BillingSyncStatus>('idle');
 
   const clearAuthCallbackError = useCallback(() => {
     setAuthCallbackError(null);
@@ -189,6 +202,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTransactions([]);
     setPayments([]);
     setBillingError(null);
+    setBillingErrorDetail(null);
+    setBillingStatus('idle');
   }, []);
 
   const refreshAccountData = useCallback(async () => {
@@ -199,6 +214,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     setIsDataLoading(true);
+    setBillingStatus((prev) => (prev === 'loaded' ? 'loaded' : 'loading'));
     try {
       const apiBase = getApiBaseUrl();
       const accessToken = session?.access_token;
@@ -208,13 +224,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ? new CleanDataApiClient(apiBase, accessToken)
               .getBillingSummary()
               .then((data) => ({ ok: true as const, data }))
-              .catch((err: unknown) => ({
-                ok: false as const,
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : 'Unable to load billing summary from backend.',
-              }))
+              .catch((err: unknown) => {
+                if (err instanceof CleanDataApiError) {
+                  return {
+                    ok: false as const,
+                    error: {
+                      code: err.code,
+                      message: err.message,
+                      status: err.status,
+                      requestId: err.requestId,
+                    },
+                  };
+                }
+                return {
+                  ok: false as const,
+                  error: {
+                    code: 'BILLING_SYNC_FAILED',
+                    message:
+                      err instanceof Error
+                        ? err.message
+                        : 'Unable to load billing summary from backend.',
+                  },
+                };
+              })
           : Promise.resolve(null);
 
       const [profileRes, walletRes, prefsRes, subRes, jobsRes, txRes, payRes, backendBilling] =
@@ -282,7 +314,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       if (backendBilling && backendBilling.ok) {
         const b = backendBilling.data;
+        setBillingStatus('loaded');
         setBillingError(null);
+        setBillingErrorDetail(null);
         setWallet({
           user_id: user.id,
           subscription_balance: b.wallet.subscription_balance,
@@ -319,64 +353,102 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             created_at: p.created_at,
           })),
         );
+      } else if (backendBilling && !backendBilling.ok) {
+        // Backend billing endpoint failed (e.g., HTTP 500/503). Do NOT synthesize a fake
+        // Free Tier or 0 balance — keep state explicitly marked as sync-unavailable so the UI
+        // shows the error and Retry controls instead of misleading account balances.
+        setBillingStatus('error');
+        setBillingError(backendBilling.error.message);
+        setBillingErrorDetail(backendBilling.error);
+        setWallet(null);
+        setActivePlan(null);
+        setTransactions([]);
+        setPayments([]);
+      } else if (!accessToken) {
+        // Session token not yet hydrated; remain in loading state until access_token arrives.
+        setBillingStatus('loading');
       } else {
-        if (backendBilling && !backendBilling.ok) {
-          setBillingError(backendBilling.message);
-        }
-        if (walletRes.data) {
-          setWallet(walletRes.data as CreditWallet);
-        }
-        const subRows = Array.isArray(subRes.data) ? subRes.data : [];
-        const chosenSub =
-          subRows.find((r) => r.status === 'active') ?? (subRows.length > 0 ? subRows[0] : null);
-        if (chosenSub && chosenSub.plans) {
-          const planRow = Array.isArray(chosenSub.plans) ? chosenSub.plans[0] : chosenSub.plans;
-          if (planRow) {
-            setActivePlan({
-              ...(planRow as Omit<ActivePlanInfo, 'status' | 'current_period_end'>),
-              status: chosenSub.status,
-              provider: chosenSub.provider ?? 'system',
-              provider_subscription_id: chosenSub.provider_subscription_id ?? null,
-              cancel_at_period_end: Boolean(chosenSub.cancel_at_period_end),
-              current_period_end: chosenSub.current_period_end,
+        // Fallback when VITE_API_BASE_URL is explicitly empty: only mark loaded if RLS queries succeeded cleanly.
+        const rlsError = walletRes.error || subRes.error || txRes.error || payRes.error;
+        if (rlsError) {
+          setBillingStatus('error');
+          setBillingError(rlsError.message);
+          setBillingErrorDetail({
+            code: 'BILLING_RLS_ERROR',
+            message: rlsError.message,
+          });
+          setWallet(null);
+          setActivePlan(null);
+          setTransactions([]);
+          setPayments([]);
+        } else {
+          setBillingStatus('loaded');
+          setBillingError(null);
+          setBillingErrorDetail(null);
+          if (walletRes.data) {
+            setWallet(walletRes.data as CreditWallet);
+          } else {
+            setWallet({
+              user_id: user.id,
+              subscription_balance: 0,
+              purchased_balance: 0,
+              subscription_expires_at: null,
+              purchased_expires_at: null,
+              updated_at: new Date().toISOString(),
             });
           }
-        } else {
-          setActivePlan({
-            name: 'Free',
-            monthly_price: 0,
-            monthly_credits: 0,
-            max_file_size_mb: 5,
-            daily_job_limit: 3,
-            api_access: false,
-            api_rate_limit_per_min: 0,
-            status: 'active',
-            provider: 'system',
-            provider_subscription_id: null,
-            cancel_at_period_end: false,
-            current_period_end: null,
-          });
-        }
-        if (txRes.data) {
-          setTransactions(txRes.data as CreditTransactionRecord[]);
-        }
-        if (payRes.data) {
-          const mappedPayments = (payRes.data as Array<Record<string, unknown>>).map((row) => {
-            const pkg = row.credit_packages as { name?: string } | null;
-            const pln = row.plans as { name?: string } | null;
-            return {
-              id: String(row.id),
-              amount: Number(row.amount ?? 0),
-              currency: String(row.currency ?? 'INR'),
-              provider: (row.provider as string | null) ?? null,
-              provider_payment_id: (row.provider_payment_id as string | null) ?? null,
-              kind: (row.kind as PaymentRecord['kind']) ?? null,
-              item_name: pkg?.name ?? pln?.name ?? null,
-              status: row.status as PaymentRecord['status'],
-              created_at: String(row.created_at),
-            };
-          });
-          setPayments(mappedPayments);
+          const subRows = Array.isArray(subRes.data) ? subRes.data : [];
+          const chosenSub =
+            subRows.find((r) => r.status === 'active') ?? (subRows.length > 0 ? subRows[0] : null);
+          if (chosenSub && chosenSub.plans) {
+            const planRow = Array.isArray(chosenSub.plans) ? chosenSub.plans[0] : chosenSub.plans;
+            if (planRow) {
+              setActivePlan({
+                ...(planRow as Omit<ActivePlanInfo, 'status' | 'current_period_end'>),
+                status: chosenSub.status,
+                provider: chosenSub.provider ?? 'system',
+                provider_subscription_id: chosenSub.provider_subscription_id ?? null,
+                cancel_at_period_end: Boolean(chosenSub.cancel_at_period_end),
+                current_period_end: chosenSub.current_period_end,
+              });
+            }
+          } else {
+            setActivePlan({
+              name: 'Free',
+              monthly_price: 0,
+              monthly_credits: 0,
+              max_file_size_mb: 5,
+              daily_job_limit: 3,
+              api_access: false,
+              api_rate_limit_per_min: 0,
+              status: 'free',
+              provider: 'system',
+              provider_subscription_id: null,
+              cancel_at_period_end: false,
+              current_period_end: null,
+            });
+          }
+          setTransactions((txRes.data as CreditTransactionRecord[] | null) ?? []);
+          if (payRes.data) {
+            const mappedPayments = (payRes.data as Array<Record<string, unknown>>).map((row) => {
+              const pkg = row.credit_packages as { name?: string } | null;
+              const pln = row.plans as { name?: string } | null;
+              return {
+                id: String(row.id),
+                amount: Number(row.amount ?? 0),
+                currency: String(row.currency ?? 'INR'),
+                provider: (row.provider as string | null) ?? null,
+                provider_payment_id: (row.provider_payment_id as string | null) ?? null,
+                kind: (row.kind as PaymentRecord['kind']) ?? null,
+                item_name: pkg?.name ?? pln?.name ?? null,
+                status: row.status as PaymentRecord['status'],
+                created_at: String(row.created_at),
+              };
+            });
+            setPayments(mappedPayments);
+          } else {
+            setPayments([]);
+          }
         }
       }
 
@@ -607,6 +679,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         authCallbackError,
         clearAuthCallbackError,
         billingError,
+        billingErrorDetail,
+        billingStatus,
         session,
         user,
         profile,
