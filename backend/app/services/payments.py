@@ -176,26 +176,27 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         }
 
     @staticmethod
-    def _log_provider_error(operation: str, resp: httpx.Response, reference_id: str) -> None:
-        """Log only non-sensitive Cashfree error metadata; never log request/response bodies or credentials."""
-        provider_code = None
+    def _provider_error_code(resp: httpx.Response) -> str | None:
+        """Read only Cashfree's machine-readable error code; never expose response bodies."""
         try:
             body = resp.json()
-            if isinstance(body, dict):
-                provider_code = (
-                    body.get("code")
-                    or body.get("error_code")
-                    or body.get("type")
-                )
         except (ValueError, TypeError):
-            pass
+            return None
+        if not isinstance(body, dict):
+            return None
+        code = body.get("code") or body.get("error_code") or body.get("type")
+        return str(code).strip().lower() if code else None
 
+    @staticmethod
+    def _log_provider_error(operation: str, resp: httpx.Response, reference_id: str) -> None:
+        """Log only non-sensitive Cashfree error metadata; never log request/response bodies or credentials."""
+        provider_code = CashfreePaymentAdapter._provider_error_code(resp)
         log_event(
             "cashfree_api_error",
             reference_id,
             operation=operation,
             http_status=resp.status_code,
-            provider_code=str(provider_code)[:120] if provider_code else None,
+            provider_code=provider_code[:120] if provider_code else None,
         )
 
     async def create_order(
@@ -284,7 +285,12 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         )
         if existing.status_code == 200:
             return plan_id
-        if existing.status_code not in (404,):
+        # Cashfree Sandbox can report a missing plan as HTTP 400 with the
+        # explicit machine code "plan_not_found" (rather than HTTP 404).
+        # Only that exact provider code is treated as absence; auth, validation,
+        # and server errors must still fail closed.
+        provider_code = self._provider_error_code(existing)
+        if existing.status_code != 404 and provider_code != "plan_not_found":
             self._log_provider_error("lookup_subscription_plan", existing, plan_id)
             raise ApiServiceError(
                 502,
