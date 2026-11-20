@@ -171,6 +171,9 @@ export interface BillingSummaryResponse {
   subscription: {
     plan_name: string;
     status: string;
+    provider?: string;
+    provider_subscription_id?: string | null;
+    cancel_at_period_end?: boolean;
     monthly_price_paise: number;
     monthly_credits: number;
     max_file_size_mb: number;
@@ -186,6 +189,7 @@ export interface BillingSummaryResponse {
 export interface CheckoutCreateRequest {
   kind: 'subscription' | 'credit_pack';
   item_name: string;
+  customer_phone?: string;
 }
 
 export interface CheckoutCreateResponse {
@@ -193,11 +197,38 @@ export interface CheckoutCreateResponse {
   payment_id: string;
   provider: string;
   order_id: string;
+  subscription_id: string | null;
+  payment_session_id: string | null;
+  subscription_session_id: string | null;
+  cashfree_mode: 'sandbox' | 'production';
   amount_paise: number;
   currency: string;
   kind: 'subscription' | 'credit_pack';
   item_name: string;
-  key_id: string | null;
+  message: string;
+}
+
+export interface CheckoutVerifyRequest {
+  kind: 'subscription' | 'credit_pack';
+  order_id?: string;
+  subscription_id?: string;
+}
+
+export interface CheckoutVerifyResponse {
+  success: true;
+  kind: 'subscription' | 'credit_pack';
+  status: 'paid' | 'active' | 'pending' | 'failed' | 'canceled' | 'expired';
+  item_name: string | null;
+  wallet: BillingSummaryResponse['wallet'];
+  subscription: BillingSummaryResponse['subscription'];
+  message: string;
+}
+
+export interface SubscriptionCancelResponse {
+  success: true;
+  subscription_id: string | null;
+  status: string;
+  plan_name: string;
   message: string;
 }
 

@@ -10,6 +10,7 @@ from app.middleware.rate_limit import RateLimitMiddleware, SlidingWindowRateLimi
 from app.routes import account, api_keys, billing, files, health, jobs
 from app.services.api_keys import InMemoryApiKeyStore
 from app.services.credits import InMemoryCreditStore
+from app.services.payments import get_payment_adapter
 from app.services.storage import LocalPrivateStorage
 from app.utils.security import ApiServiceError
 
@@ -79,6 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.storage = LocalPrivateStorage(cfg.storage_dir)
     app.state.credits = InMemoryCreditStore()
     app.state.api_keys = InMemoryApiKeyStore()
+    app.state.payment_adapter = get_payment_adapter(cfg)
     rate_limiter = SlidingWindowRateLimiter(requests_per_minute=cfg.rate_limit_per_min)
     app.state.rate_limiter = rate_limiter
 

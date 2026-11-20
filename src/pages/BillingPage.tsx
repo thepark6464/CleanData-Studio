@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react';
+import { load as loadCashfree } from '@cashfreepayments/cashfree-js';
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  Clock,
   CreditCard,
+  Loader2,
   RefreshCw,
   ShieldCheck,
+  XCircle,
 } from 'lucide-react';
 import {
   CREDIT_PACKS,
@@ -15,7 +19,7 @@ import {
   SUBSCRIPTION_PLANS,
 } from '../config/pricing';
 import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api/client';
-import type { CheckoutCreateResponse } from '../lib/api/types';
+import type { CheckoutVerifyResponse } from '../lib/api/types';
 import { useAuth } from '../lib/auth/AuthContext';
 import type { AppRoute } from '../lib/router';
 import { setIntendedRoute } from '../lib/router';
@@ -29,6 +33,24 @@ function formatDate(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function getSubscriptionBadge(status: string | undefined, planName: string) {
+  if (planName === 'Free') {
+    return { label: 'Free Tier', tone: 'border-slate-200 bg-slate-100 text-slate-700' };
+  }
+  switch ((status || '').toLowerCase()) {
+    case 'active':
+      return { label: 'Subscription active', tone: 'border-emerald-200 bg-emerald-50 text-emerald-800' };
+    case 'past_due':
+      return { label: 'Payment due', tone: 'border-amber-200 bg-amber-50 text-amber-900' };
+    case 'canceled':
+      return { label: 'Cancelled', tone: 'border-slate-300 bg-slate-100 text-slate-700' };
+    case 'expired':
+      return { label: 'Subscription expired', tone: 'border-red-200 bg-red-50 text-red-800' };
+    default:
+      return { label: 'Pending', tone: 'border-amber-200 bg-amber-50 text-amber-900' };
+  }
 }
 
 export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
@@ -45,9 +67,14 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     refreshAccountData,
   } = useAuth();
 
+  const [customerPhone, setCustomerPhone] = useState<string>('');
   const [checkoutBusyItem, setCheckoutBusyItem] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
-  const [checkoutOrder, setCheckoutOrder] = useState<CheckoutCreateResponse | null>(null);
+  const [verifyingCheckout, setVerifyingCheckout] = useState<boolean>(false);
+  const [verificationResult, setVerificationResult] = useState<CheckoutVerifyResponse | null>(null);
+  const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);
+  const [cancelingSub, setCancelingSub] = useState<boolean>(false);
+  const [cancelNotice, setCancelNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
@@ -58,13 +85,64 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
   const apiBase = getApiBaseUrl();
 
+  // Verify returning Cashfree redirect checkouts server-side (never grant from query params alone)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !session?.access_token || !user) return;
+    const params = new URLSearchParams(window.location.search);
+    const orderId = params.get('order_id');
+    const subscriptionId = params.get('subscription_id');
+    const kindParam = params.get('kind');
+
+    if (!orderId && !subscriptionId) return;
+
+    const kind: 'credit_pack' | 'subscription' =
+      kindParam === 'subscription' || Boolean(subscriptionId) ? 'subscription' : 'credit_pack';
+
+    // Remove query parameters immediately so page reloads do not re-trigger checks
+    window.history.replaceState({}, '', window.location.pathname);
+
+    let cancelled = false;
+    setVerifyingCheckout(true);
+    setCheckoutError(null);
+    setVerificationResult(null);
+
+    const client = new CleanDataApiClient(apiBase, session.access_token);
+    void client
+      .verifyCheckout({
+        kind,
+        order_id: orderId || undefined,
+        subscription_id: subscriptionId || undefined,
+      })
+      .then(async (res) => {
+        if (cancelled) return;
+        setVerificationResult(res);
+        await refreshAccountData();
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof CleanDataApiError) {
+          setCheckoutError(`${err.code}: ${err.message}`);
+        } else {
+          setCheckoutError('Unable to verify Cashfree payment status with server.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setVerifyingCheckout(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, session?.access_token, user, refreshAccountData]);
+
   const handleCheckout = async (kind: 'subscription' | 'credit_pack', itemName: string) => {
     setCheckoutError(null);
-    setCheckoutOrder(null);
+    setVerificationResult(null);
+    setCancelNotice(null);
 
     if (!apiBase) {
       setCheckoutError(
-        'FastAPI backend URL (VITE_API_BASE_URL) is not configured. Start the FastAPI service with payment keys to initialize server-verified checkout orders.',
+        'FastAPI backend URL (VITE_API_BASE_URL) is not configured to initialize Cashfree sessions.',
       );
       return;
     }
@@ -73,20 +151,94 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
       return;
     }
 
+    const normalizedDigits = customerPhone.replace(/\D/g, '');
+    if (normalizedDigits.length > 0 && normalizedDigits.length < 10) {
+      setCheckoutError('Please enter a valid 10-digit mobile number or leave it blank.');
+      return;
+    }
+
     setCheckoutBusyItem(`${kind}:${itemName}`);
     try {
       const client = new CleanDataApiClient(apiBase, session.access_token);
-      const order = await client.createCheckout({ kind, item_name: itemName });
-      setCheckoutOrder(order);
+      const checkout = await client.createCheckout({
+        kind,
+        item_name: itemName,
+        customer_phone: normalizedDigits.length >= 10 ? normalizedDigits.slice(-10) : undefined,
+      });
+
+      const cashfree = await loadCashfree({ mode: checkout.cashfree_mode });
+      if (!cashfree) {
+        setCheckoutError('Cashfree Checkout SDK failed to initialize in this browser.');
+        return;
+      }
+
+      if (kind === 'credit_pack') {
+        if (!checkout.payment_session_id) {
+          setCheckoutError('Backend did not return a Cashfree payment_session_id.');
+          return;
+        }
+        const result = await cashfree.checkout({
+          paymentSessionId: checkout.payment_session_id,
+          redirectTarget: '_self',
+        });
+        if (result?.error) {
+          setCheckoutError(result.error.message || 'Cashfree checkout could not be completed.');
+          return;
+        }
+        if (result?.paymentDetails) {
+          setVerifyingCheckout(true);
+          const verified = await client.verifyCheckout({
+            kind: 'credit_pack',
+            order_id: checkout.order_id,
+          });
+          setVerificationResult(verified);
+          await refreshAccountData();
+          setVerifyingCheckout(false);
+        }
+      } else {
+        if (!checkout.subscription_session_id) {
+          setCheckoutError('Backend did not return a Cashfree subscription_session_id.');
+          return;
+        }
+        const result = await cashfree.subscriptionsCheckout({
+          subsSessionId: checkout.subscription_session_id,
+          redirectTarget: '_self',
+        });
+        if (result?.error) {
+          setCheckoutError(result.error.message || 'Cashfree subscription checkout could not be completed.');
+          return;
+        }
+      }
+    } catch (err) {
+      if (err instanceof CleanDataApiError) {
+        setCheckoutError(`${err.code}: ${err.message}`);
+      } else {
+        setCheckoutError('Could not connect to FastAPI Cashfree billing endpoint.');
+      }
+    } finally {
+      setCheckoutBusyItem(null);
+    }
+  };
+
+  const handleCancelSubscription = async () => {
+    if (!session?.access_token) return;
+    setCancelingSub(true);
+    setCheckoutError(null);
+    setCancelNotice(null);
+    try {
+      const client = new CleanDataApiClient(apiBase, session.access_token);
+      const res = await client.cancelSubscription();
+      setShowCancelConfirm(false);
+      setCancelNotice(res.message);
       await refreshAccountData();
     } catch (err) {
       if (err instanceof CleanDataApiError) {
         setCheckoutError(`${err.code}: ${err.message}`);
       } else {
-        setCheckoutError('Could not connect to FastAPI billing endpoint.');
+        setCheckoutError('Unable to cancel subscription right now.');
       }
     } finally {
-      setCheckoutBusyItem(null);
+      setCancelingSub(false);
     }
   };
 
@@ -100,7 +252,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           <p className="text-sm text-slate-600">
             Configure <code className="font-mono text-xs">VITE_SUPABASE_URL</code> and{' '}
             <code className="font-mono text-xs">VITE_SUPABASE_ANON_KEY</code> to manage plans,
-            credits, and checkout orders.
+            credits, and Cashfree checkout sessions.
           </p>
         </div>
       </div>
@@ -119,6 +271,13 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   const subBalance = wallet?.subscription_balance ?? 0;
   const purBalance = wallet?.purchased_balance ?? 0;
   const paidPlans = SUBSCRIPTION_PLANS.filter((p) => p.monthlyPricePaise > 0);
+  const currentPlanName = activePlan?.name ?? 'Free';
+  const currentPlanPrice = activePlan?.monthly_price ?? 0;
+  const canCancelActiveSub =
+    currentPlanName !== 'Free' &&
+    activePlan?.status === 'active' &&
+    Boolean(activePlan?.provider_subscription_id);
+  const subBadge = getSubscriptionBadge(activePlan?.status, currentPlanName);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-8 sm:px-6 sm:py-10">
@@ -129,7 +288,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           </h1>
           <p className="mt-1 text-sm text-slate-600">
             1 credit = up to {ROWS_PER_CREDIT.toLocaleString()} server rows. Subscription credits are
-            spent before purchased credits.
+            spent before purchased credits. Powered by Cashfree Payments.
           </p>
         </div>
 
@@ -156,15 +315,54 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
       {/* Split Credit Wallet Summary */}
       <section aria-label="Wallet balances" className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
-          <p className="text-xs font-medium text-slate-500">Active Subscription</p>
-          <p className="font-display text-2xl font-bold text-slate-950">
-            {activePlan?.name ?? 'Free'}
-          </p>
+        <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500">Active Subscription</p>
+            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium ${subBadge.tone}`}>
+              {subBadge.label}
+            </span>
+          </div>
+          <p className="font-display text-2xl font-bold text-slate-950">{currentPlanName}</p>
           <p className="font-mono text-xs text-slate-600 tabular-nums">
-            {formatInrFromPaise(activePlan?.monthly_price ?? 0)}/mo ·{' '}
-            {activePlan?.monthly_credits ?? 0} monthly credits
+            {formatInrFromPaise(currentPlanPrice)}/mo · {activePlan?.monthly_credits ?? 0} monthly credits
           </p>
+
+          {canCancelActiveSub && !showCancelConfirm && (
+            <button
+              type="button"
+              onClick={() => setShowCancelConfirm(true)}
+              className="mt-1 inline-flex items-center text-xs font-medium text-red-700 hover:text-red-800 cursor-pointer"
+            >
+              Cancel monthly auto-renewal
+            </button>
+          )}
+
+          {showCancelConfirm && (
+            <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
+              <p className="text-[11px] text-red-900">
+                Cancel your Cashfree mandate for <strong>{currentPlanName}</strong>? Future
+                recurring charges will stop immediately.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={cancelingSub}
+                  onClick={() => void handleCancelSubscription()}
+                  className="rounded-md bg-red-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-red-800 cursor-pointer disabled:opacity-50"
+                >
+                  {cancelingSub ? 'Cancelling...' : 'Confirm Cancel'}
+                </button>
+                <button
+                  type="button"
+                  disabled={cancelingSub}
+                  onClick={() => setShowCancelConfirm(false)}
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Keep Plan
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
@@ -189,6 +387,20 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         </div>
       </section>
 
+      {verifyingCheckout && (
+        <div className="flex items-center gap-2.5 rounded-xl border border-blue-200 bg-blue-50 p-4 text-xs text-blue-950">
+          <Loader2 className="h-4 w-4 animate-spin text-blue-700" aria-hidden="true" />
+          <span>Verifying payment &amp; mandate status directly with Cashfree...</span>
+        </div>
+      )}
+
+      {cancelNotice && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-800">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-slate-700" aria-hidden="true" />
+          <span>{cancelNotice}</span>
+        </div>
+      )}
+
       {checkoutError && (
         <div
           role="alert"
@@ -199,31 +411,83 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         </div>
       )}
 
-      {checkoutOrder && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-950 space-y-1.5">
+      {verificationResult && (
+        <div
+          className={`rounded-xl border p-4 text-xs space-y-1.5 ${
+            verificationResult.status === 'paid' || verificationResult.status === 'active'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+              : verificationResult.status === 'pending'
+              ? 'border-amber-200 bg-amber-50 text-amber-950'
+              : 'border-red-200 bg-red-50 text-red-950'
+          }`}
+        >
           <div className="flex items-center gap-2 font-semibold">
-            <CheckCircle2 className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+            {verificationResult.status === 'paid' || verificationResult.status === 'active' ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+            ) : verificationResult.status === 'pending' ? (
+              <Clock className="h-4 w-4 text-amber-700" aria-hidden="true" />
+            ) : (
+              <XCircle className="h-4 w-4 text-red-700" aria-hidden="true" />
+            )}
             <span>
-              Checkout Order Initialized ({checkoutOrder.item_name} —{' '}
-              {formatInrFromPaise(checkoutOrder.amount_paise)})
+              {verificationResult.status === 'paid'
+                ? `Successful — ${verificationResult.item_name ?? 'Credit Pack'}`
+                : verificationResult.status === 'active'
+                ? `Subscription active — ${verificationResult.item_name ?? 'Monthly Plan'}`
+                : verificationResult.status === 'pending'
+                ? 'Pending confirmation'
+                : verificationResult.status === 'canceled'
+                ? 'Cancelled'
+                : verificationResult.status === 'expired'
+                ? 'Subscription expired'
+                : 'Failed'}
             </span>
           </div>
-          <p className="font-mono text-[11px] text-emerald-900">
-            Provider: {checkoutOrder.provider} · Order ID: {checkoutOrder.order_id} · Payment ID:{' '}
-            {checkoutOrder.payment_id}
-          </p>
-          <p>{checkoutOrder.message}</p>
+          <p>{verificationResult.message}</p>
         </div>
       )}
 
-      {/* Paid Subscriptions */}
+      {/* Optional Mobile Number for Cashfree Checkout Prefill / UPI Mandate */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="font-display text-sm font-semibold text-slate-950">
+              Checkout Contact Number (Optional)
+            </h2>
+            <p className="text-xs text-slate-600">
+              Provide a 10-digit mobile number for Cashfree payment receipts and UPI AutoPay mandate
+              alerts.
+            </p>
+          </div>
+          <input
+            type="tel"
+            inputMode="numeric"
+            maxLength={14}
+            value={customerPhone}
+            onChange={(e) => setCustomerPhone(e.target.value)}
+            placeholder="10-digit mobile (e.g. 9876543210)"
+            aria-label="Mobile number for Cashfree checkout"
+            className="w-full sm:w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+          />
+        </div>
+      </section>
+
+      {/* Paid Subscriptions (Cashfree Subscriptions) */}
       <section aria-labelledby="billing-plans-heading" className="space-y-4">
-        <h2 id="billing-plans-heading" className="font-display text-lg font-semibold text-slate-950">
-          Upgrade Monthly Plan
-        </h2>
+        <div>
+          <h2 id="billing-plans-heading" className="font-display text-lg font-semibold text-slate-950">
+            Monthly Recurring Subscriptions
+          </h2>
+          <p className="text-xs text-slate-600">
+            Handled via Cashfree Subscriptions (UPI AutoPay, Cards, or eNACH). Switching plans
+            cancels your previous recurring mandate once the new mandate activates.
+          </p>
+        </div>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           {paidPlans.map((plan) => {
-            const isCurrent = activePlan?.name === plan.name;
+            const isCurrent = currentPlanName === plan.name && activePlan?.status === 'active';
+            const isUpgrade = currentPlanName !== 'Free' && plan.monthlyPricePaise > currentPlanPrice;
+            const isDowngrade = currentPlanName !== 'Free' && plan.monthlyPricePaise < currentPlanPrice;
             const busy = checkoutBusyItem === `subscription:${plan.name}`;
             return (
               <div
@@ -250,7 +514,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
                 <button
                   type="button"
-                  disabled={busy || isCurrent}
+                  disabled={busy || isCurrent || verifyingCheckout}
                   onClick={() => void handleCheckout('subscription', plan.name)}
                   className={`mt-5 inline-flex min-h-[38px] w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 ${
                     isCurrent
@@ -263,8 +527,12 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
                     {isCurrent
                       ? 'Current Active Plan'
                       : busy
-                      ? 'Creating Order...'
-                      : `Subscribe (${formatInrFromPaise(plan.monthlyPricePaise)})`}
+                      ? 'Launching Cashfree...'
+                      : isUpgrade
+                      ? `Upgrade (${formatInrFromPaise(plan.monthlyPricePaise)}/mo)`
+                      : isDowngrade
+                      ? `Downgrade (${formatInrFromPaise(plan.monthlyPricePaise)}/mo)`
+                      : `Subscribe (${formatInrFromPaise(plan.monthlyPricePaise)}/mo)`}
                   </span>
                 </button>
               </div>
@@ -273,15 +541,15 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         </div>
       </section>
 
-      {/* One-Time Credit Packs */}
+      {/* One-Time Credit Packs (Cashfree Payment Gateway) */}
       <section aria-labelledby="billing-packs-heading" className="space-y-4">
         <div className="flex flex-col gap-1">
           <h2 id="billing-packs-heading" className="font-display text-lg font-semibold text-slate-950">
             Buy One-Time Credit Packs
           </h2>
           <p className="text-xs text-slate-600">
-            Credits expire {PURCHASED_CREDIT_EXPIRY_MONTHS} months after purchase. Failed server jobs
-            are automatically refunded.
+            Processed via Cashfree Payment Gateway. Credits remain valid for{' '}
+            {PURCHASED_CREDIT_EXPIRY_MONTHS} months and failed server jobs are refunded automatically.
           </p>
         </div>
 
@@ -307,12 +575,12 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || verifyingCheckout}
                   onClick={() => void handleCheckout('credit_pack', pack.name)}
                   className="mt-4 inline-flex min-h-[38px] w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50 cursor-pointer disabled:opacity-50"
                 >
                   <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>{busy ? 'Creating Order...' : `Buy ${pack.credits} Credits`}</span>
+                  <span>{busy ? 'Launching Cashfree...' : `Buy ${pack.credits} Credits`}</span>
                 </button>
               </div>
             );
@@ -384,7 +652,8 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           <div>
             <h2 className="font-display text-base font-semibold text-slate-950">Payment History</h2>
             <p className="text-xs text-slate-600">
-              All amounts are stored in INR paise and confirmed exclusively via HMAC-signed webhooks.
+              All amounts are stored in INR paise and verified strictly via Cashfree server APIs
+              and HMAC-SHA256 signed webhooks.
             </p>
           </div>
           <ShieldCheck className="h-4 w-4 text-emerald-700 shrink-0" aria-hidden="true" />
@@ -392,7 +661,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
         {payments.length === 0 ? (
           <p className="px-5 py-8 text-center text-xs text-slate-500">
-            No payment orders created yet.
+            No Cashfree payment sessions created yet.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -410,7 +679,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
                 {payments.map((p) => (
                   <tr key={p.id}>
                     <td className="px-4 py-3 font-mono text-slate-900">{p.kind || 'payment'}</td>
-                    <td className="px-4 py-3 text-slate-700">{p.provider || 'razorpay'}</td>
+                    <td className="px-4 py-3 capitalize text-slate-700">{p.provider || 'cashfree'}</td>
                     <td className="px-4 py-3 text-right font-mono font-semibold tabular-nums text-slate-900">
                       {formatInrFromPaise(p.amount)}
                     </td>
@@ -420,6 +689,8 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
                           ? 'text-emerald-700'
                           : p.status === 'failed'
                           ? 'text-red-700'
+                          : p.status === 'refunded'
+                          ? 'text-slate-600'
                           : 'text-amber-700'
                       }`}
                     >

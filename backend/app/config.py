@@ -29,10 +29,53 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = ""
     database_url: str = ""
 
-    payment_provider: str = "razorpay"
-    payment_key_id: str = ""
-    payment_key_secret: str = ""
+    payment_provider: str = "cashfree"
+    cashfree_app_id: str = ""
+    cashfree_secret_key: str = ""
+    cashfree_webhook_secret: str = ""
+    cashfree_env: str = "sandbox"
+    cashfree_api_version: str = "2025-01-01"
     payment_webhook_secret: str = ""
+
+    @property
+    def resolved_cashfree_env(self) -> str:
+        raw = (self.cashfree_env or os.getenv("CASHFREE_ENV", "sandbox")).strip().lower()
+        return "production" if raw == "production" else "sandbox"
+
+    @property
+    def cashfree_base_url(self) -> str:
+        if self.resolved_cashfree_env == "production":
+            return "https://api.cashfree.com/pg"
+        return "https://sandbox.cashfree.com/pg"
+
+    @property
+    def resolved_cashfree_app_id(self) -> str:
+        return (self.cashfree_app_id or os.getenv("CASHFREE_APP_ID", "")).strip()
+
+    @property
+    def resolved_cashfree_secret_key(self) -> str:
+        return (self.cashfree_secret_key or os.getenv("CASHFREE_SECRET_KEY", "")).strip()
+
+    @property
+    def resolved_cashfree_webhook_secret(self) -> str:
+        raw = (
+            self.cashfree_webhook_secret
+            or os.getenv("CASHFREE_WEBHOOK_SECRET", "")
+            or self.resolved_cashfree_secret_key
+            or self.payment_webhook_secret
+            or os.getenv("PAYMENT_WEBHOOK_SECRET", "")
+        )
+        return raw.strip()
+
+    @property
+    def resolved_cashfree_api_version(self) -> str:
+        raw = self.cashfree_api_version or os.getenv("CASHFREE_API_VERSION", "2025-01-01")
+        return raw.strip() or "2025-01-01"
+
+    @property
+    def resolved_frontend_origin(self) -> str:
+        first = next((o.strip().rstrip("/") for o in self.allowed_origin.split(",") if o.strip()), "")
+        return first or "https://cleandata-studio.vercel.app"
 
     @property
     def resolved_supabase_url(self) -> str:

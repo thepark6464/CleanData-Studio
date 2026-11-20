@@ -205,7 +205,7 @@ paths:
           description: Billing summary
   /v1/billing/checkout:
     post:
-      summary: Create a Razorpay checkout order for a subscription plan or credit pack
+      summary: Create a Cashfree Payment Gateway order or Cashfree Subscription checkout session
       security:
         - BearerAuth: []
       requestBody:
@@ -221,12 +221,45 @@ paths:
                   enum: [credit_pack, subscription]
                 item_name:
                   type: string
+                customer_phone:
+                  type: string
       responses:
         "200":
-          description: Checkout order initialized
+          description: Cashfree checkout session initialized
+  /v1/billing/verify:
+    post:
+      summary: Verify a returning Cashfree order or subscription directly with Cashfree APIs
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind:
+                  type: string
+                  enum: [credit_pack, subscription]
+                order_id:
+                  type: string
+                subscription_id:
+                  type: string
+      responses:
+        "200":
+          description: Verified billing state returned
+  /v1/billing/subscription/cancel:
+    post:
+      summary: Cancel the caller's active Cashfree recurring subscription mandate
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Subscription cancelled on Cashfree and marked canceled
   /v1/webhooks/payments:
     post:
-      summary: Verify and process signed Razorpay / payment webhook events idempotently
+      summary: Verify and process signed Cashfree PG and Subscription webhook events idempotently
       responses:
         "200":
           description: Webhook verified and applied

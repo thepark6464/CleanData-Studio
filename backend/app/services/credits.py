@@ -66,6 +66,9 @@ class _WalletState:
     purchased_expires_at: dt.datetime | None = None
     plan_name: str = "Free"
     subscription_status: str = "active"
+    subscription_provider: str = "system"
+    provider_subscription_id: str | None = None
+    cancel_at_period_end: bool = False
     daily_job_dates: list[dt.date] = field(default_factory=list)
 
 
@@ -93,6 +96,7 @@ class InMemoryCreditStore:
         self.reservations: dict[str, _JobReservation] = {}
         self.payments: dict[str, dict[str, Any]] = {}
         self.payment_by_provider_id: dict[str, str] = {}
+        self.subscriptions: dict[str, dict[str, Any]] = {}
         self.webhook_events: set[tuple[str, str]] = set()
 
     def ensure_wallet(self, user_id: str) -> _WalletState:
@@ -101,11 +105,22 @@ class InMemoryCreditStore:
         return self.wallets[user_id]
 
     def grant_subscription_credits(
-        self, user_id: str, plan_name: str, amount: int, period_end: dt.datetime
+        self,
+        user_id: str,
+        plan_name: str,
+        amount: int,
+        period_end: dt.datetime,
+        *,
+        provider: str = "cashfree",
+        provider_subscription_id: str | None = None,
     ) -> None:
         w = self.ensure_wallet(user_id)
         w.plan_name = plan_name
         w.subscription_status = "active"
+        w.subscription_provider = provider
+        if provider_subscription_id is not None:
+            w.provider_subscription_id = provider_subscription_id
+        w.cancel_at_period_end = False
         w.subscription_balance = amount
         w.subscription_expires_at = period_end
         if amount > 0:
@@ -116,7 +131,7 @@ class InMemoryCreditStore:
                     "amount": amount,
                     "credit_source": "subscription",
                     "transaction_type": "subscription_grant",
-                    "reference_id": plan_name,
+                    "reference_id": provider_subscription_id or plan_name,
                     "expires_at": period_end.isoformat(),
                     "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                 }
@@ -161,7 +176,7 @@ class InMemoryCreditStore:
                         "amount": -w.subscription_balance,
                         "credit_source": "subscription",
                         "transaction_type": "expire",
-                        "reference_id": None,
+                        "reference_id": w.provider_subscription_id,
                         "expires_at": w.subscription_expires_at.isoformat(),
                         "created_at": ref.isoformat(),
                     }
@@ -381,6 +396,59 @@ class InMemoryCreditStore:
         self.payment_by_provider_id[provider_payment_id] = payment_id
         return payment_id
 
+    def create_pending_subscription(
+        self,
+        *,
+        user_id: str,
+        plan_name: str,
+        provider: str,
+        provider_subscription_id: str,
+        provider_plan_id: str | None = None,
+    ) -> None:
+        self.subscriptions[provider_subscription_id] = {
+            "user_id": user_id,
+            "plan_name": plan_name,
+            "provider": provider,
+            "provider_subscription_id": provider_subscription_id,
+            "provider_plan_id": provider_plan_id,
+            "status": "pending",
+            "cancel_at_period_end": False,
+            "current_period_start": None,
+            "current_period_end": None,
+            "last_credited_at": None,
+            "last_credited_payment_id": None,
+        }
+
+    def get_payment_for_user(
+        self, user_id: str, provider_payment_id: str
+    ) -> dict[str, Any] | None:
+        pid = self.payment_by_provider_id.get(provider_payment_id)
+        if not pid:
+            return None
+        row = self.payments.get(pid)
+        if row and row["user_id"] == user_id:
+            return row
+        return None
+
+    def get_subscription_for_user(
+        self, user_id: str, subscription_id: str
+    ) -> dict[str, Any] | None:
+        row = self.subscriptions.get(subscription_id)
+        if row and row["user_id"] == user_id:
+            return row
+        return None
+
+    def list_other_active_subscriptions(
+        self, user_id: str, exclude_subscription_id: str
+    ) -> list[dict[str, Any]]:
+        return [
+            sub
+            for sub_id, sub in self.subscriptions.items()
+            if sub["user_id"] == user_id
+            and sub_id != exclude_subscription_id
+            and sub["status"] in {"active", "past_due"}
+        ]
+
     def process_payment_event(
         self,
         *,
@@ -388,6 +456,7 @@ class InMemoryCreditStore:
         event_id: str,
         provider_payment_id: str,
         status: str,
+        payload_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         dedup_key = (provider, event_id)
         if dedup_key in self.webhook_events:
@@ -398,7 +467,20 @@ class InMemoryCreditStore:
         if not payment_id:
             return {"status": "payment_not_found"}
         payment = self.payments[payment_id]
+        meta = payload_meta or {}
+
+        if status == "paid":
+            meta_currency = str(meta.get("currency") or "").upper()
+            if meta_currency and meta_currency != str(payment["currency"]).upper():
+                return {"status": "currency_mismatch"}
+            meta_amount = meta.get("amount_paise")
+            if meta_amount is not None and int(meta_amount) != int(payment["amount_paise"]):
+                return {"status": "amount_mismatch"}
+
         prev_status = payment["status"]
+        if prev_status in {"paid", "refunded"} and status == "failed":
+            return {"status": "ignored_stale_failure", "payment_id": payment_id}
+
         payment["status"] = status
 
         if status == "paid" and prev_status != "paid":
@@ -411,10 +493,229 @@ class InMemoryCreditStore:
                 if plan:
                     period_end = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)
                     self.grant_subscription_credits(
-                        payment["user_id"], plan.name, plan.monthly_credits, period_end
+                        payment["user_id"],
+                        plan.name,
+                        plan.monthly_credits,
+                        period_end,
+                        provider=provider,
+                        provider_subscription_id=provider_payment_id,
                     )
+        elif status == "refunded" and prev_status == "paid":
+            if payment["kind"] == "credit_pack":
+                pack = PACK_CATALOG.get(payment["item_name"])
+                revoke_key = f"refund_revoke:{payment_id}"
+                if pack and revoke_key not in self.idempotency_keys:
+                    self.idempotency_keys.add(revoke_key)
+                    w = self.ensure_wallet(payment["user_id"])
+                    revoke_amt = min(w.purchased_balance, pack.credits)
+                    if revoke_amt > 0:
+                        w.purchased_balance -= revoke_amt
+                        self.transactions.append(
+                            {
+                                "id": str(uuid.uuid4()),
+                                "user_id": payment["user_id"],
+                                "amount": -revoke_amt,
+                                "credit_source": "purchased",
+                                "transaction_type": "adjustment",
+                                "reference_id": payment_id,
+                                "expires_at": None,
+                                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                            }
+                        )
 
         return {"status": "processed", "payment_id": payment_id}
+
+    def process_subscription_event(
+        self,
+        *,
+        provider: str,
+        event_id: str,
+        subscription_id: str,
+        event_kind: str,
+        provider_payment_id: str | None = None,
+        amount_paise: int | None = None,
+        currency: str = "INR",
+        period_end: dt.datetime | None = None,
+        payload_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        dedup_key = (provider, event_id)
+        if dedup_key in self.webhook_events:
+            return {"status": "already_processed"}
+        self.webhook_events.add(dedup_key)
+
+        sub = self.subscriptions.get(subscription_id)
+        if not sub:
+            pay_id = self.payment_by_provider_id.get(subscription_id)
+            if not pay_id:
+                return {"status": "subscription_not_found"}
+            pay = self.payments[pay_id]
+            sub = {
+                "user_id": pay["user_id"],
+                "plan_name": pay["item_name"],
+                "provider": provider,
+                "provider_subscription_id": subscription_id,
+                "provider_plan_id": (payload_meta or {}).get("provider_plan_id"),
+                "status": "pending",
+                "cancel_at_period_end": False,
+                "current_period_start": None,
+                "current_period_end": None,
+                "last_credited_at": None,
+                "last_credited_payment_id": None,
+            }
+            self.subscriptions[subscription_id] = sub
+
+        plan = PLAN_CATALOG.get(sub["plan_name"])
+        if not plan:
+            return {"status": "plan_not_found"}
+
+        user_id = sub["user_id"]
+        w = self.ensure_wallet(user_id)
+        now = dt.datetime.now(dt.timezone.utc)
+        resolved_end = period_end or (now + dt.timedelta(days=30))
+
+        if event_kind in {"activated", "renewal_paid"}:
+            if currency and currency.upper() != "INR":
+                return {"status": "currency_mismatch"}
+            if amount_paise is not None and amount_paise > 0 and amount_paise != plan.monthly_price_paise:
+                return {"status": "amount_mismatch"}
+
+            # Settle initial checkout row
+            init_pay_id = self.payment_by_provider_id.get(subscription_id)
+            if init_pay_id and self.payments[init_pay_id]["status"] == "pending":
+                self.payments[init_pay_id]["status"] = "paid"
+
+            # Add recurring charge ledger entry when distinct payment id arrives
+            if (
+                provider_payment_id
+                and provider_payment_id != subscription_id
+                and provider_payment_id not in self.payment_by_provider_id
+            ):
+                new_pay_id = str(uuid.uuid4())
+                self.payments[new_pay_id] = {
+                    "id": new_pay_id,
+                    "user_id": user_id,
+                    "amount_paise": plan.monthly_price_paise,
+                    "currency": "INR",
+                    "provider": provider,
+                    "provider_payment_id": provider_payment_id,
+                    "kind": "subscription",
+                    "item_name": plan.name,
+                    "status": "paid",
+                    "created_at": now.isoformat(),
+                }
+                self.payment_by_provider_id[provider_payment_id] = new_pay_id
+
+            should_credit = False
+            last_at: dt.datetime | None = sub.get("last_credited_at")
+            if last_at is None:
+                should_credit = True
+            elif (
+                provider_payment_id
+                and sub.get("last_credited_payment_id") != provider_payment_id
+                and (now - last_at) > dt.timedelta(hours=12)
+            ):
+                should_credit = True
+
+            # Cancel any previous active subscription records for this user
+            superseded_ids: list[str] = []
+            for other_id, other in self.subscriptions.items():
+                if other["user_id"] == user_id and other_id != subscription_id and other["status"] in {"active", "past_due"}:
+                    other["status"] = "canceled"
+                    other["cancel_at_period_end"] = True
+                    if other.get("provider") in {"cashfree", "test_hmac"}:
+                        superseded_ids.append(other_id)
+
+            sub["status"] = "active"
+            sub["cancel_at_period_end"] = False
+            if should_credit or sub.get("current_period_start") is None:
+                sub["current_period_start"] = now
+                sub["current_period_end"] = resolved_end
+            if should_credit:
+                sub["last_credited_at"] = now
+                if provider_payment_id:
+                    sub["last_credited_payment_id"] = provider_payment_id
+                self.grant_subscription_credits(
+                    user_id,
+                    plan.name,
+                    plan.monthly_credits,
+                    resolved_end,
+                    provider=provider,
+                    provider_subscription_id=subscription_id,
+                )
+            else:
+                w.plan_name = plan.name
+                w.subscription_status = "active"
+                w.subscription_provider = provider
+                w.provider_subscription_id = subscription_id
+                w.cancel_at_period_end = False
+
+            return {
+                "status": "processed",
+                "subscription_id": subscription_id,
+                "subscription_status": "active",
+                "credited": should_credit,
+                "superseded_subscription_ids": superseded_ids,
+            }
+
+        if event_kind == "payment_failed":
+            init_pay_id = self.payment_by_provider_id.get(subscription_id)
+            if init_pay_id and self.payments[init_pay_id]["status"] == "pending":
+                self.payments[init_pay_id]["status"] = "failed"
+            elif provider_payment_id and provider_payment_id not in self.payment_by_provider_id:
+                new_pay_id = str(uuid.uuid4())
+                self.payments[new_pay_id] = {
+                    "id": new_pay_id,
+                    "user_id": user_id,
+                    "amount_paise": plan.monthly_price_paise,
+                    "currency": "INR",
+                    "provider": provider,
+                    "provider_payment_id": provider_payment_id,
+                    "kind": "subscription",
+                    "item_name": plan.name,
+                    "status": "failed",
+                    "created_at": now.isoformat(),
+                }
+                self.payment_by_provider_id[provider_payment_id] = new_pay_id
+
+            next_status = "canceled" if sub["status"] == "pending" else "past_due"
+            sub["status"] = next_status
+            if w.provider_subscription_id == subscription_id:
+                w.subscription_status = next_status
+            return {"status": "processed", "subscription_id": subscription_id, "subscription_status": next_status}
+
+        if event_kind == "canceled":
+            init_pay_id = self.payment_by_provider_id.get(subscription_id)
+            if init_pay_id and self.payments[init_pay_id]["status"] == "pending":
+                self.payments[init_pay_id]["status"] = "failed"
+            sub["status"] = "canceled"
+            sub["cancel_at_period_end"] = True
+            if w.provider_subscription_id == subscription_id:
+                w.subscription_status = "canceled"
+                w.cancel_at_period_end = True
+            return {"status": "processed", "subscription_id": subscription_id, "subscription_status": "canceled"}
+
+        if event_kind == "expired":
+            sub["status"] = "expired"
+            if w.provider_subscription_id == subscription_id or w.plan_name == plan.name:
+                w.subscription_status = "expired"
+                if w.subscription_balance > 0:
+                    self.transactions.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "user_id": user_id,
+                            "amount": -w.subscription_balance,
+                            "credit_source": "subscription",
+                            "transaction_type": "expire",
+                            "reference_id": subscription_id,
+                            "expires_at": now.isoformat(),
+                            "created_at": now.isoformat(),
+                        }
+                    )
+                    w.subscription_balance = 0
+                    w.subscription_expires_at = now
+            return {"status": "processed", "subscription_id": subscription_id, "subscription_status": "expired"}
+
+        return {"status": "ignored", "subscription_id": subscription_id}
 
     def get_summary(self, user_id: str) -> BillingSummaryResponse:
         w = self.ensure_wallet(user_id)
@@ -463,6 +764,9 @@ class InMemoryCreditStore:
             subscription=ActiveSubscriptionSummary(
                 plan_name=plan.name,
                 status=w.subscription_status,
+                provider=w.subscription_provider,
+                provider_subscription_id=w.provider_subscription_id,
+                cancel_at_period_end=w.cancel_at_period_end,
                 monthly_price_paise=plan.monthly_price_paise,
                 monthly_credits=plan.monthly_credits,
                 max_file_size_mb=plan.max_file_size_mb,

@@ -45,6 +45,9 @@ export interface ActivePlanInfo {
   api_access: boolean;
   api_rate_limit_per_min: number;
   status: string;
+  provider?: string | null;
+  provider_subscription_id?: string | null;
+  cancel_at_period_end?: boolean;
   current_period_end: string | null;
 }
 
@@ -214,13 +217,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         supabase
           .from('subscriptions')
           .select(
-            'status, current_period_end, plans(name, monthly_price, monthly_credits, max_file_size_mb, daily_job_limit, api_access, api_rate_limit_per_min)',
+            'status, provider, provider_subscription_id, cancel_at_period_end, current_period_end, plans(name, monthly_price, monthly_credits, max_file_size_mb, daily_job_limit, api_access, api_rate_limit_per_min)',
           )
           .eq('user_id', user.id)
-          .eq('status', 'active')
+          .in('status', ['active', 'past_due', 'canceled', 'expired'])
           .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+          .limit(5),
         supabase
           .from('cleaning_jobs')
           .select(
@@ -269,15 +271,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       }
 
-      if (subRes.data && subRes.data.plans) {
-        const planRow = Array.isArray(subRes.data.plans)
-          ? subRes.data.plans[0]
-          : subRes.data.plans;
+      const subRows = Array.isArray(subRes.data) ? subRes.data : [];
+      const chosenSub =
+        subRows.find((r) => r.status === 'active') ?? (subRows.length > 0 ? subRows[0] : null);
+      if (chosenSub && chosenSub.plans) {
+        const planRow = Array.isArray(chosenSub.plans) ? chosenSub.plans[0] : chosenSub.plans;
         if (planRow) {
           setActivePlan({
             ...(planRow as Omit<ActivePlanInfo, 'status' | 'current_period_end'>),
-            status: subRes.data.status,
-            current_period_end: subRes.data.current_period_end,
+            status: chosenSub.status,
+            provider: chosenSub.provider ?? 'system',
+            provider_subscription_id: chosenSub.provider_subscription_id ?? null,
+            cancel_at_period_end: Boolean(chosenSub.cancel_at_period_end),
+            current_period_end: chosenSub.current_period_end,
           });
         }
       } else {
@@ -290,6 +296,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           api_access: false,
           api_rate_limit_per_min: 0,
           status: 'active',
+          provider: 'system',
+          provider_subscription_id: null,
+          cancel_at_period_end: false,
           current_period_end: null,
         });
       }

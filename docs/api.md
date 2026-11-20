@@ -48,8 +48,10 @@ Two credential types are accepted:
 | `POST` | `/v1/api-keys` | Supabase JWT | Generate a new `cd_live_` API key (Pro/Business plans only) |
 | `DELETE` | `/v1/api-keys/{key_id}` | Supabase JWT | Immediately revoke an API key |
 | `GET` | `/v1/billing/summary` | Supabase JWT | Fetch active subscription, credit wallet, and recent INR payments |
-| `POST` | `/v1/billing/checkout` | Supabase JWT | Initialize a Razorpay order (amounts stored in integer paise) |
-| `POST` | `/v1/webhooks/payments` | Signature HMAC | Process verified payment webhooks idempotently |
+| `POST` | `/v1/billing/checkout` | Supabase JWT | Initialize a Cashfree PG order (`payment_session_id`) or Subscription (`subscription_session_id`) |
+| `POST` | `/v1/billing/verify` | Supabase JWT | Verify Cashfree order or subscription status server-side after checkout redirect |
+| `POST` | `/v1/billing/subscription/cancel` | Supabase JWT | Cancel the active recurring Cashfree subscription mandate |
+| `POST` | `/v1/webhooks/payments` | Cashfree HMAC | Process verified Cashfree PG & Subscription webhooks idempotently |
 | `GET` | `/v1/account/me` | Supabase JWT | Return authenticated user claims |
 | `POST` | `/v1/account/delete-request` | Supabase JWT | Record account and personal data deletion request |
 

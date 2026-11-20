@@ -19,8 +19,16 @@
   * `DOWNLOAD_SIGNING_SECRET`
   * `SUPABASE_SERVICE_ROLE_KEY`
   * `SUPABASE_JWT_SECRET` (optional legacy HS256 fallback)
-  * `PAYMENT_KEY_ID`, `PAYMENT_KEY_SECRET`, `PAYMENT_WEBHOOK_SECRET`
+  * `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`
+  * `CASHFREE_ENV` (`sandbox` for testing, `production` only after full end-to-end verification)
+  * `CASHFREE_API_VERSION` (e.g., `2025-01-01`)
 * Provision private storage (`STORAGE_BUCKET=cleandata-private`) with public access disabled.
+
+### Cashfree Dashboard & Webhook Configuration
+* Full step-by-step setup instructions (API keys, Subscriptions activation, webhook tabs, Sandbox/Production promotion): see [`docs/cashfree-setup.md`](./cashfree-setup.md).
+* **Payment Gateway Webhooks**: Register `https://cleandata-studio.vercel.app/api/v1/webhooks/payments` under **Payment Gateway → Developers → Webhooks** for payment success, failure, and refund events.
+* **Cashfree Subscriptions Activation & Webhooks**: Confirm **Cashfree Subscriptions** (recurring UPI AutoPay / Cards / eNACH mandates) is enabled on your Cashfree merchant account and register the same `https://cleandata-studio.vercel.app/api/v1/webhooks/payments` endpoint under the **Subscriptions** webhook tab (`SUBSCRIPTION_STATUS_CHANGED`, `SUBSCRIPTION_PAYMENT_SUCCESS`, `SUBSCRIPTION_PAYMENT_FAILED`).
+* Signatures are verified via Base64 HMAC-SHA256 over `x-webhook-timestamp` + raw request body using `CASHFREE_WEBHOOK_SECRET` (or `CASHFREE_SECRET_KEY`). Never place Cashfree credentials in `VITE_*` variables.
 
 ### Supabase Auth Dashboard Configuration
 * Under **Authentication → URL Configuration**:
@@ -61,7 +69,7 @@ Schedule an hourly or daily cron job / Supabase pg_cron task to invoke `cleanup_
 - [ ] Browser-local cleaning tested on CSV and XLSX up to 5 MB with zero network file upload.
 - [ ] `npm run lint`, `npm test`, and `npm run build` exit `0`.
 - [ ] `pytest -v` passes all cleaning parity, JWT auth, billing/credit, and API key/security suites.
-- [ ] Supabase migrations `0001`–`0004` applied and `supabase/tests/rls_two_user_test.sql` passes.
-- [ ] Razorpay live/test webhook URL registered for `/v1/webhooks/payments` with `PAYMENT_WEBHOOK_SECRET`.
+- [ ] Supabase migrations `0001`–`0005` applied and `supabase/tests/rls_two_user_test.sql` passes.
+- [ ] Cashfree Sandbox/Production webhook URLs registered for `/api/v1/webhooks/payments` (both PG and Subscriptions tabs) with `CASHFREE_WEBHOOK_SECRET` and Subscriptions enabled on merchant account.
 - [ ] `ENVIRONMENT=production` verified so HSTS, CSP, `Permissions-Policy`, and `nosniff` headers are active.
 - [ ] Retention cleanup cron job active for 24h inputs / 7d outputs.

@@ -216,6 +216,7 @@ class SupabaseServiceClient:
         kind: str,
         package_id: str | None = None,
         plan_id: str | None = None,
+        provider_order_id: str | None = None,
     ) -> str:
         headers = {**self._headers(), "Prefer": "return=representation"}
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -228,6 +229,7 @@ class SupabaseServiceClient:
                     "currency": currency,
                     "provider": provider,
                     "provider_payment_id": provider_payment_id,
+                    "provider_order_id": provider_order_id or provider_payment_id,
                     "kind": kind,
                     "package_id": package_id,
                     "plan_id": plan_id,
@@ -237,6 +239,109 @@ class SupabaseServiceClient:
             resp.raise_for_status()
             rows = resp.json()
             return str(rows[0]["id"])
+
+    async def create_pending_subscription(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+        provider: str,
+        provider_subscription_id: str,
+        cf_subscription_id: str | None = None,
+        provider_plan_id: str | None = None,
+    ) -> str:
+        headers = {**self._headers(), "Prefer": "return=representation"}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/rest/v1/subscriptions",
+                headers=headers,
+                json={
+                    "user_id": user_id,
+                    "plan_id": plan_id,
+                    "status": "pending",
+                    "provider": provider,
+                    "provider_subscription_id": provider_subscription_id,
+                    "cf_subscription_id": cf_subscription_id,
+                    "provider_plan_id": provider_plan_id,
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return str(rows[0]["id"])
+
+    async def get_payment_for_user(
+        self, user_id: str, provider_payment_id: str
+    ) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/rest/v1/payments",
+                headers=self._headers(),
+                params={
+                    "select": "id,user_id,amount,currency,provider,provider_payment_id,kind,package_id,plan_id,status,credit_packages(name),plans(name)",
+                    "user_id": f"eq.{user_id}",
+                    "provider_payment_id": f"eq.{provider_payment_id}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0] if rows else None
+
+    async def get_subscription_for_user(
+        self, user_id: str, subscription_id: str
+    ) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/rest/v1/subscriptions",
+                headers=self._headers(),
+                params={
+                    "select": "id,user_id,plan_id,status,provider,provider_subscription_id,plans(name,monthly_price,monthly_credits)",
+                    "user_id": f"eq.{user_id}",
+                    "provider_subscription_id": f"eq.{subscription_id}",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0] if rows else None
+
+    async def list_other_active_cashfree_subscriptions(
+        self, user_id: str, exclude_subscription_id: str
+    ) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/rest/v1/subscriptions",
+                headers=self._headers(),
+                params={
+                    "select": "id,provider,provider_subscription_id,status",
+                    "user_id": f"eq.{user_id}",
+                    "provider": "eq.cashfree",
+                    "status": "in.(active,past_due)",
+                    "provider_subscription_id": f"neq.{exclude_subscription_id}",
+                },
+            )
+            resp.raise_for_status()
+            return [r for r in resp.json() if r.get("provider_subscription_id")]
+
+    async def get_latest_active_cashfree_subscription(
+        self, user_id: str
+    ) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/rest/v1/subscriptions",
+                headers=self._headers(),
+                params={
+                    "select": "id,provider,provider_subscription_id,status,plans(name)",
+                    "user_id": f"eq.{user_id}",
+                    "provider": "eq.cashfree",
+                    "status": "in.(active,past_due)",
+                    "order": "created_at.desc",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0] if rows else None
 
     async def get_billing_summary(self, user_id: str):
         from app.models import (
@@ -261,16 +366,19 @@ class SupabaseServiceClient:
                 f"{self.base_url}/rest/v1/subscriptions",
                 headers=self._headers(),
                 params={
-                    "select": "status,current_period_end,plans(name,monthly_price,monthly_credits,max_file_size_mb,daily_job_limit,api_access,api_rate_limit_per_min)",
+                    "select": "status,provider,provider_subscription_id,cancel_at_period_end,current_period_end,plans(name,monthly_price,monthly_credits,max_file_size_mb,daily_job_limit,api_access,api_rate_limit_per_min)",
                     "user_id": f"eq.{user_id}",
-                    "status": "eq.active",
+                    "status": "in.(active,past_due,canceled,expired)",
                     "order": "created_at.desc",
-                    "limit": "1",
+                    "limit": "5",
                 },
             )
             sub_resp.raise_for_status()
             sub_rows = sub_resp.json()
-            sub_row = sub_rows[0] if sub_rows else {}
+            # Prefer active paid/system row; fall back to latest past_due/canceled/expired if no active row exists
+            sub_row = next((r for r in sub_rows if r.get("status") == "active"), None) or (
+                sub_rows[0] if sub_rows else {}
+            )
             plan_rel = sub_row.get("plans") or {}
             if isinstance(plan_rel, list):
                 plan_rel = plan_rel[0] if plan_rel else {}
@@ -291,6 +399,7 @@ class SupabaseServiceClient:
                 f"{self.base_url}/rest/v1/payments",
                 headers=self._headers(),
                 params={
+                    "select": "id,amount,currency,provider,provider_payment_id,kind,status,created_at,credit_packages(name),plans(name)",
                     "user_id": f"eq.{user_id}",
                     "order": "created_at.desc",
                     "limit": "25",
@@ -301,6 +410,15 @@ class SupabaseServiceClient:
 
         sub_bal = int(w.get("subscription_balance", 0))
         pur_bal = int(w.get("purchased_balance", 0))
+
+        def _extract_item_name(pay_row: dict[str, Any]) -> str | None:
+            pkg = pay_row.get("credit_packages")
+            if isinstance(pkg, dict) and pkg.get("name"):
+                return str(pkg["name"])
+            pln = pay_row.get("plans")
+            if isinstance(pln, dict) and pln.get("name"):
+                return str(pln["name"])
+            return None
 
         return BillingSummaryResponse(
             wallet=CreditWalletSummary(
@@ -313,6 +431,9 @@ class SupabaseServiceClient:
             subscription=ActiveSubscriptionSummary(
                 plan_name=str(plan_rel.get("name", "Free")),
                 status=str(sub_row.get("status", "active")),
+                provider=str(sub_row.get("provider") or "system"),
+                provider_subscription_id=sub_row.get("provider_subscription_id"),
+                cancel_at_period_end=bool(sub_row.get("cancel_at_period_end", False)),
                 monthly_price_paise=int(plan_rel.get("monthly_price", 0)),
                 monthly_credits=int(plan_rel.get("monthly_credits", 0)),
                 max_file_size_mb=int(plan_rel.get("max_file_size_mb", 5)),
@@ -338,10 +459,10 @@ class SupabaseServiceClient:
                     id=str(p["id"]),
                     amount_paise=int(p["amount"]),
                     currency=str(p.get("currency", "INR")),
-                    provider=str(p.get("provider", "razorpay")),
+                    provider=str(p.get("provider") or "cashfree"),
                     provider_payment_id=p.get("provider_payment_id"),
                     kind=p["kind"],
-                    item_name=None,
+                    item_name=_extract_item_name(p),
                     status=p["status"],
                     created_at=str(p["created_at"]),
                 )

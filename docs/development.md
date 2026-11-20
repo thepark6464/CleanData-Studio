@@ -8,7 +8,7 @@ This guide covers running **CleanData Studio** (React + Vite), **CleanData API**
 
 * **Node.js** 20+ and `npm`
 * **Python** 3.11+ and `pip`
-* Optional for persistent accounts & billing: **Supabase** project (PostgreSQL + Auth + Storage) and **Razorpay** test credentials
+* Optional for persistent accounts & billing: **Supabase** project (PostgreSQL + Auth + Storage) and **Cashfree** Sandbox credentials
 
 ---
 
@@ -31,7 +31,7 @@ npm run dev
 ```
 
 * Keep `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_API_BASE_URL` in `.env`.
-* **Never** place `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `API_KEY_PEPPER`, or payment secrets into `VITE_*` variables.
+* **Never** place `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `API_KEY_PEPPER`, or Cashfree credentials (`CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`) into `VITE_*` variables.
 
 ---
 
@@ -61,8 +61,9 @@ Apply the ordered SQL migrations inside `/supabase/migrations/`:
 
 1. `0001_init.sql` (13 core tables & indexes)
 2. `0002_rls.sql` (strict Row Level Security policies)
-3. `0003_functions.sql` (`reserve_credits`, `commit_credit_reservation`, `refund_credit_reservation`, `process_payment_event`, `cleanup_expired_artifacts`)
+3. `0003_functions.sql` (`reserve_credits`, `commit_credits`, `refund_credits`, `process_payment_event`)
 4. `0004_seed.sql` (INR `plans` and `credit_packages` seed data)
+5. `0005_cashfree_subscriptions.sql` (Cashfree order/subscription columns, refund handling, `process_subscription_event`)
 
 Consolidated snapshots are also maintained in `/database/schema.sql` and `/database/policies.sql`.
 

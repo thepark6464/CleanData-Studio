@@ -6,6 +6,8 @@ import type {
   BillingSummaryResponse,
   CheckoutCreateRequest,
   CheckoutCreateResponse,
+  CheckoutVerifyRequest,
+  CheckoutVerifyResponse,
   CleanJobCreateResponse,
   CleanJobSubmitParams,
   CreateApiKeyResponse,
@@ -15,6 +17,7 @@ import type {
   JobReportResponse,
   JobStatusResponse,
   SignedDownloadResponse,
+  SubscriptionCancelResponse,
 } from './types';
 
 export class CleanDataApiError extends Error {
@@ -196,6 +199,25 @@ export class CleanDataApiClient {
       method: 'POST',
       headers: this.authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
+    });
+    return handleJsonResponse(resp);
+  }
+
+  async verifyCheckout(payload: CheckoutVerifyRequest): Promise<CheckoutVerifyResponse> {
+    this.assertConfigured();
+    const resp = await fetch(`${this.baseUrl}/v1/billing/verify`, {
+      method: 'POST',
+      headers: this.authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    return handleJsonResponse(resp);
+  }
+
+  async cancelSubscription(): Promise<SubscriptionCancelResponse> {
+    this.assertConfigured();
+    const resp = await fetch(`${this.baseUrl}/v1/billing/subscription/cancel`, {
+      method: 'POST',
+      headers: this.authHeaders({ 'Content-Type': 'application/json' }),
     });
     return handleJsonResponse(resp);
   }

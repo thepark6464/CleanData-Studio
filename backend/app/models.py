@@ -170,6 +170,9 @@ class CreditWalletSummary(BaseModel):
 class ActiveSubscriptionSummary(BaseModel):
     plan_name: str
     status: str
+    provider: str = "system"
+    provider_subscription_id: str | None = None
+    cancel_at_period_end: bool = False
     monthly_price_paise: int
     monthly_credits: int
     max_file_size_mb: int
@@ -220,6 +223,7 @@ class BillingSummaryResponse(BaseModel):
 class CheckoutCreateRequest(BaseModel):
     kind: Literal["subscription", "credit_pack"]
     item_name: str = Field(..., min_length=1, max_length=64)
+    customer_phone: str | None = Field(default=None, max_length=20)
 
 
 class CheckoutCreateResponse(BaseModel):
@@ -227,10 +231,37 @@ class CheckoutCreateResponse(BaseModel):
     payment_id: str
     provider: str
     order_id: str
+    subscription_id: str | None = None
+    payment_session_id: str | None = None
+    subscription_session_id: str | None = None
+    cashfree_mode: Literal["sandbox", "production"] = "sandbox"
     amount_paise: int
     currency: str
     kind: Literal["subscription", "credit_pack"]
     item_name: str
-    key_id: str | None = None
+    message: str
+
+
+class CheckoutVerifyRequest(BaseModel):
+    kind: Literal["subscription", "credit_pack"]
+    order_id: str | None = Field(default=None, max_length=128)
+    subscription_id: str | None = Field(default=None, max_length=128)
+
+
+class CheckoutVerifyResponse(BaseModel):
+    success: Literal[True] = True
+    kind: Literal["subscription", "credit_pack"]
+    status: Literal["paid", "active", "pending", "failed", "canceled", "expired"]
+    item_name: str | None = None
+    wallet: CreditWalletSummary
+    subscription: ActiveSubscriptionSummary
+    message: str
+
+
+class SubscriptionCancelResponse(BaseModel):
+    success: Literal[True] = True
+    subscription_id: str | None = None
+    status: str
+    plan_name: str
     message: str
 
