@@ -17,7 +17,7 @@ import { SettingsPage } from './pages/SettingsPage';
 
 function AppShell() {
   const { route, navigate } = useAppRouter();
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handlePrimaryTopBarAction = () => {
@@ -27,6 +27,15 @@ function AppShell() {
       navigate('/cleaner');
     } else {
       navigate('/auth');
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut();
+    if (route.startsWith('/dashboard')) {
+      navigate('/auth');
+    } else {
+      navigate('/');
     }
   };
 
@@ -45,6 +54,8 @@ function AppShell() {
         onPrimaryAction={handlePrimaryTopBarAction}
         hasDataset={false}
         isSignedIn={Boolean(user)}
+        userEmail={user?.email ?? null}
+        onSignOut={handleSignOut}
       />
 
       <main id="main-content" className="flex-1">

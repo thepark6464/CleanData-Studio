@@ -22,6 +22,7 @@ async def get_account_me(request: Request) -> dict:
             "id": user.user_id,
             "email": user.email,
             "role": user.role,
+            "auth_method": user.auth_method,
         },
     }
 

@@ -14,9 +14,11 @@ import {
   XCircle,
 } from 'lucide-react';
 import { formatInrFromPaise } from '../config/pricing';
+import { ApiUsageCard } from '../components/ApiUsageCard';
 import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api/client';
 import { useAuth, type CleaningJobRecord } from '../lib/auth/AuthContext';
 import type { AppRoute } from '../lib/router';
+import { setIntendedRoute } from '../lib/router';
 
 interface DashboardPageProps {
   onNavigate: (to: AppRoute) => void;
@@ -82,14 +84,44 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadingJobId, setDownloadingJobId] = useState<string | null>(null);
+  const [backendAuthStatus, setBackendAuthStatus] = useState<
+    'idle' | 'verified' | 'error'
+  >('idle');
+  const [backendAuthMethod, setBackendAuthMethod] = useState<string | null>(null);
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
+      setIntendedRoute('/dashboard');
       onNavigate('/auth');
     }
   }, [isConfigured, isLoading, user, onNavigate]);
 
   const apiBase = getApiBaseUrl();
+
+  useEffect(() => {
+    let active = true;
+    if (!apiBase || !session?.access_token) {
+      setBackendAuthStatus('idle');
+      setBackendAuthMethod(null);
+      return;
+    }
+    const client = new CleanDataApiClient(apiBase, session.access_token);
+    client
+      .getAccountMe()
+      .then((res) => {
+        if (!active) return;
+        setBackendAuthStatus('verified');
+        setBackendAuthMethod(res.user.auth_method ?? 'jwt');
+      })
+      .catch(() => {
+        if (!active) return;
+        setBackendAuthStatus('error');
+        setBackendAuthMethod(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [apiBase, session?.access_token]);
 
   const handleFetchSignedDownload = async (jobId: string) => {
     if (!apiBase || !session?.access_token) return;
@@ -170,6 +202,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
               {profile?.full_name || user.email}
             </span>{' '}
             <span className="font-mono text-xs text-slate-500">({user.email})</span>
+          </p>
+          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700">
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Authenticated session active</span>
+            </span>
+            {backendAuthStatus === 'verified' && (
+              <span className="font-mono text-[11px] text-slate-600">
+                FastAPI verified ({backendAuthMethod ?? 'jwt'})
+              </span>
+            )}
           </p>
         </div>
 
@@ -273,6 +316,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           </p>
         </div>
       </section>
+
+      {/* API Usage & Remaining Rate Limit (/api/usage) */}
+      <ApiUsageCard
+        accessToken={session?.access_token}
+        planName={activePlan?.name}
+        planRateLimitPerMin={activePlan?.api_rate_limit_per_min ?? 0}
+        planApiAccess={Boolean(activePlan?.api_access)}
+        onNavigate={onNavigate}
+      />
 
       {downloadError && (
         <div

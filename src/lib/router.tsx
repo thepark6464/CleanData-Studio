@@ -28,10 +28,52 @@ const VALID_ROUTES = new Set<AppRoute>([
   '/dashboard/settings',
 ]);
 
+const ROUTE_ALIASES: Record<string, AppRoute> = {
+  '/login': '/auth',
+  '/signin': '/auth',
+  '/signup': '/auth',
+  '/register': '/auth',
+  '/forgot-password': '/auth',
+  '/reset-password': '/auth',
+  '/auth/callback': '/auth',
+  '/settings': '/dashboard/settings',
+  '/billing': '/dashboard/billing',
+  '/api-keys': '/dashboard/api-keys',
+};
+
+const INTENDED_ROUTE_KEY = 'cleandata_intended_route';
+
+export function setIntendedRoute(route: AppRoute): void {
+  if (typeof window === 'undefined') return;
+  if (route === '/auth' || route === '/404') return;
+  try {
+    window.sessionStorage.setItem(INTENDED_ROUTE_KEY, route);
+  } catch {
+    // Ignore storage errors in restricted environments
+  }
+}
+
+export function consumeIntendedRoute(fallback: AppRoute = '/dashboard'): AppRoute {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const saved = window.sessionStorage.getItem(INTENDED_ROUTE_KEY);
+    window.sessionStorage.removeItem(INTENDED_ROUTE_KEY);
+    if (saved && VALID_ROUTES.has(saved as AppRoute) && saved !== '/auth') {
+      return saved as AppRoute;
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return fallback;
+}
+
 export function normalizeRoute(pathname: string): AppRoute {
   const cleaned = pathname.replace(/\/+$/, '') || '/';
   if (VALID_ROUTES.has(cleaned as AppRoute)) {
     return cleaned as AppRoute;
+  }
+  if (cleaned in ROUTE_ALIASES) {
+    return ROUTE_ALIASES[cleaned];
   }
   return '/404';
 }

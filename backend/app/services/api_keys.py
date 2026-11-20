@@ -251,17 +251,45 @@ class ApiKeyService:
                 status_code=status_code,
             )
 
-    async def get_usage_summary(self, user_id: str) -> dict[str, Any]:
+    async def get_usage_summary(
+        self,
+        user_id: str,
+        rate_limit_snapshot: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
         plan_name, api_access, rate_limit = await self._get_user_plan_limits(user_id)
         if self.db.configured:
             items = await self.db.list_api_usage(user_id)
         else:
             items = self.memory_keys.list_usage(user_id)
+
+        effective_limit = (
+            rate_limit
+            if rate_limit > 0
+            else (rate_limit_snapshot["limit_per_min"] if rate_limit_snapshot else self.settings.rate_limit_per_min)
+        )
+        used_in_window = rate_limit_snapshot["used"] if rate_limit_snapshot else 0
+        remaining_in_window = max(0, effective_limit - used_in_window)
+        window_seconds = rate_limit_snapshot["window_seconds"] if rate_limit_snapshot else 60
+        reset_in_seconds = rate_limit_snapshot["reset_in_seconds"] if rate_limit_snapshot else 60
+        total_credits_used = sum(int(item.get("credits_used") or 0) for item in items)
+
         return {
             "success": True,
             "plan_name": plan_name,
             "api_access": api_access,
             "rate_limit_per_min": rate_limit,
+            "remaining_rate_limit": remaining_in_window,
+            "requests_used_current_window": used_in_window,
+            "rate_limit_window_seconds": window_seconds,
+            "rate_limit_reset_in_seconds": reset_in_seconds,
+            "rate_limit": {
+                "limit_per_min": effective_limit,
+                "used": used_in_window,
+                "remaining": remaining_in_window,
+                "window_seconds": window_seconds,
+                "reset_in_seconds": reset_in_seconds,
+            },
             "total_requests_logged": len(items),
+            "total_credits_used": total_credits_used,
             "items": items,
         }

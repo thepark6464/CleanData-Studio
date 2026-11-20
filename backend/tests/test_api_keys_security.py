@@ -94,6 +94,28 @@ def test_api_key_lifecycle_plan_gating_and_usage(tmp_path):
     assert usage_resp.json()["total_requests_logged"] >= 1
     assert usage_resp.json()["rate_limit_per_min"] == 60
 
+    # New /api/usage endpoint rejects unauthenticated requests and returns live rate-limit metrics
+    unauth_usage = client.get("/api/usage")
+    assert unauth_usage.status_code == 401
+
+    dash_usage = client.get("/api/usage", headers=pro_headers)
+    assert dash_usage.status_code == 200
+    dash_body = dash_usage.json()
+    assert dash_body["plan_name"] == "Pro"
+    assert dash_body["api_access"] is True
+    assert dash_body["rate_limit_per_min"] == 60
+    assert dash_body["rate_limit"]["limit_per_min"] == 60
+    assert dash_body["requests_used_current_window"] >= 1
+    assert dash_body["remaining_rate_limit"] == 60 - dash_body["requests_used_current_window"]
+    assert dash_body["total_credits_used"] >= 1
+
+    dash_usage_next = client.get("/api/usage", headers=pro_headers)
+    assert dash_usage_next.status_code == 200
+    assert (
+        dash_usage_next.json()["remaining_rate_limit"]
+        == dash_body["remaining_rate_limit"] - 1
+    )
+
     # 4. Cross-user revocation fails cleanly and owner revocation invalidates key immediately
     other_del = client.delete(f"/v1/api-keys/{key_id}", headers=free_headers)
     assert other_del.status_code == 404
@@ -114,5 +136,29 @@ def test_security_headers_and_metrics(tmp_path):
     assert resp.headers["x-frame-options"] == "DENY"
     assert resp.headers["referrer-policy"] == "strict-origin-when-cross-origin"
     assert "strict-transport-security" in resp.headers
-    assert "content-security-policy" in resp.headers
+    assert resp.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     assert "uptime_seconds" in resp.json()
+
+    # /api/health works and retains strict API CSP
+    api_health = client.get("/api/health")
+    assert api_health.status_code == 200
+    assert api_health.json()["status"] == "ok"
+    assert api_health.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+
+    # /api/docs renders Swagger UI HTML referencing /api/openapi.json with scoped CDN CSP
+    docs_resp = client.get("/api/docs")
+    assert docs_resp.status_code == 200
+    assert "text/html" in docs_resp.headers["content-type"]
+    assert "/api/openapi.json" in docs_resp.text
+    assert "https://cdn.jsdelivr.net" in docs_resp.text
+    docs_csp = docs_resp.headers["content-security-policy"]
+    assert "https://cdn.jsdelivr.net" in docs_csp
+    assert "default-src 'none'" not in docs_csp
+
+    # /api/openapi.json returns valid OpenAPI 3 schema with strict CSP
+    schema_resp = client.get("/api/openapi.json")
+    assert schema_resp.status_code == 200
+    assert schema_resp.json()["info"]["title"] == "CleanData API"
+    assert "/api/v1/clean" in schema_resp.json()["paths"]
+    assert "/api/usage" in schema_resp.json()["paths"]
+    assert schema_resp.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"

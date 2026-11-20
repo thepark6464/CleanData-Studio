@@ -4,22 +4,29 @@
 
 ## 1. Environment & Infrastructure Checklist
 
-### Frontend (Vite SPA — Port 3000 / CDN)
+### Frontend (Vite SPA — Port 3000 / Vercel)
 * Build static assets with `npm run build` (`dist/`).
 * Configure public build variables only:
-  * `VITE_API_BASE_URL` (HTTPS FastAPI origin)
+  * `VITE_API_BASE_URL` (optional; defaults to `/api` in production builds)
   * `VITE_SUPABASE_URL`
   * `VITE_SUPABASE_ANON_KEY`
 
-### Backend (FastAPI — Docker via `/backend/Dockerfile`)
-* Set `ENVIRONMENT=production` and `ALLOWED_ORIGIN` to the exact HTTPS frontend origin.
+### Backend (FastAPI — Docker / Vercel Multi-Service)
+* **Critical for multi-service Vercel deployments:** Backend services do not automatically inherit `VITE_SUPABASE_URL` or variables assigned only to the frontend service. Explicitly configure `SUPABASE_URL` (for ES256 JWKS verification via `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`) on the FastAPI backend Vercel project for **both Production and Preview** environments and trigger a fresh deployment.
+* Set `ENVIRONMENT=production` and `ALLOWED_ORIGIN` to the exact HTTPS frontend origin (`https://cleandata-studio.vercel.app`).
 * Provide strong, distinct 32+ byte random secrets:
   * `API_KEY_PEPPER`
   * `DOWNLOAD_SIGNING_SECRET`
   * `SUPABASE_SERVICE_ROLE_KEY`
-  * `SUPABASE_JWT_SECRET`
+  * `SUPABASE_JWT_SECRET` (optional legacy HS256 fallback)
   * `PAYMENT_KEY_ID`, `PAYMENT_KEY_SECRET`, `PAYMENT_WEBHOOK_SECRET`
 * Provision private storage (`STORAGE_BUCKET=cleandata-private`) with public access disabled.
+
+### Supabase Auth Dashboard Configuration
+* Under **Authentication → URL Configuration**:
+  * Site URL: `https://cleandata-studio.vercel.app`
+  * Redirect URLs: `https://cleandata-studio.vercel.app/auth`, `https://cleandata-studio.vercel.app/auth/callback`, `http://localhost:3000/auth`
+* Swagger documentation is mounted at `/api/docs` with OpenAPI schema at `/api/openapi.json` (docs routes use a route-scoped CSP permitting `https://cdn.jsdelivr.net`, while API routes enforce `default-src 'none'`).
 
 ---
 

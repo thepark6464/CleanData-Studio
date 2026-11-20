@@ -18,6 +18,7 @@ import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api
 import type { CheckoutCreateResponse } from '../lib/api/types';
 import { useAuth } from '../lib/auth/AuthContext';
 import type { AppRoute } from '../lib/router';
+import { setIntendedRoute } from '../lib/router';
 
 interface BillingPageProps {
   onNavigate: (to: AppRoute) => void;
@@ -50,6 +51,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
+      setIntendedRoute('/dashboard/billing');
       onNavigate('/auth');
     }
   }, [isConfigured, isLoading, user, onNavigate]);

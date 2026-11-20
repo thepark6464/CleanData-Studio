@@ -33,7 +33,8 @@ export class CleanDataApiError extends Error {
 
 export function getApiBaseUrl(): string {
   const configured = import.meta.env.VITE_API_BASE_URL as string | undefined;
-  return (configured ?? '/api').trim().replace(/\/+$/, '');
+  const cleaned = (configured ?? '/api').trim().replace(/\/+$/, '');
+  return cleaned || '/api';
 }
 
 async function handleJsonResponse<T>(resp: Response): Promise<T> {
@@ -160,6 +161,17 @@ export class CleanDataApiClient {
     return handleJsonResponse(resp);
   }
 
+  async getAccountMe(): Promise<{
+    success: true;
+    user: { id: string; email?: string | null; role: string; auth_method?: string };
+  }> {
+    this.assertConfigured();
+    const resp = await fetch(`${this.baseUrl}/v1/account/me`, {
+      headers: this.authHeaders(),
+    });
+    return handleJsonResponse(resp);
+  }
+
   async requestAccountDeletion(reason: string): Promise<AccountDeletionResponse> {
     this.assertConfigured();
     const resp = await fetch(`${this.baseUrl}/v1/account/delete-request`, {
@@ -218,6 +230,19 @@ export class CleanDataApiClient {
   async getUsage(): Promise<ApiUsageResponse> {
     this.assertConfigured();
     const resp = await fetch(`${this.baseUrl}/v1/usage`, {
+      headers: this.authHeaders(),
+    });
+    return handleJsonResponse(resp);
+  }
+
+  async getDashboardUsage(): Promise<ApiUsageResponse> {
+    const endpoint =
+      !this.baseUrl || this.baseUrl === '/api'
+        ? '/api/usage'
+        : this.baseUrl.endsWith('/api')
+        ? `${this.baseUrl}/usage`
+        : `${this.baseUrl}/api/usage`;
+    const resp = await fetch(endpoint, {
       headers: this.authHeaders(),
     });
     return handleJsonResponse(resp);

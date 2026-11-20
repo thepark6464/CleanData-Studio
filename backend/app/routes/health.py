@@ -6,11 +6,16 @@ _START_TIME = time.monotonic()
 
 
 @router.get("/health")
-async def health_check() -> dict:
+async def health_check(request: Request) -> dict:
+    settings = request.app.state.settings
     return {
         "status": "ok",
         "service": "cleandata-api",
         "version": "1.0.0",
+        "auth": {
+            "jwks_configured": bool(settings.resolved_supabase_url),
+            "legacy_hs256_configured": bool(settings.resolved_supabase_jwt_secret),
+        },
     }
 
 

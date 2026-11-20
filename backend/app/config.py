@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,6 +33,31 @@ class Settings(BaseSettings):
     payment_key_id: str = ""
     payment_key_secret: str = ""
     payment_webhook_secret: str = ""
+
+    @property
+    def resolved_supabase_url(self) -> str:
+        raw = self.supabase_url or os.getenv("SUPABASE_URL", "")
+        return raw.strip().rstrip("/")
+
+    @property
+    def resolved_supabase_jwt_secret(self) -> str:
+        raw = self.supabase_jwt_secret or os.getenv("SUPABASE_JWT_SECRET", "")
+        return raw.strip()
+
+    @property
+    def resolved_supabase_service_role_key(self) -> str:
+        raw = self.supabase_service_role_key or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        return raw.strip()
+
+    @property
+    def jwks_url(self) -> str:
+        base = self.resolved_supabase_url
+        return f"{base}/auth/v1/.well-known/jwks.json" if base else ""
+
+    @property
+    def jwt_issuer(self) -> str:
+        base = self.resolved_supabase_url
+        return f"{base}/auth/v1" if base else ""
 
     @property
     def max_upload_bytes(self) -> int:

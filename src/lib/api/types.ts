@@ -227,12 +227,26 @@ export interface ApiUsageItem {
   created_at: string;
 }
 
+export interface RateLimitInfo {
+  limit_per_min: number;
+  used: number;
+  remaining: number;
+  window_seconds: number;
+  reset_in_seconds: number;
+}
+
 export interface ApiUsageResponse {
   success: true;
   plan_name: string;
   api_access: boolean;
   rate_limit_per_min: number;
+  remaining_rate_limit?: number;
+  requests_used_current_window?: number;
+  rate_limit_window_seconds?: number;
+  rate_limit_reset_in_seconds?: number;
+  rate_limit?: RateLimitInfo;
   total_requests_logged: number;
+  total_credits_used?: number;
   items: ApiUsageItem[];
 }
 

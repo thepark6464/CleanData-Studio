@@ -7,8 +7,8 @@ class SupabaseServiceClient:
     """Server-side Supabase PostgREST + RPC client using service_role key (never exposed to browser)."""
 
     def __init__(self, settings: Settings):
-        self.base_url = settings.supabase_url.rstrip("/")
-        self.service_key = settings.supabase_service_role_key
+        self.base_url = settings.resolved_supabase_url
+        self.service_key = settings.resolved_supabase_service_role_key
 
     @property
     def configured(self) -> bool:

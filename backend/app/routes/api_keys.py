@@ -7,6 +7,7 @@ from app.services.api_keys import ApiKeyService
 from app.utils.security import log_event
 
 router = APIRouter(prefix="/v1", tags=["API Keys & Usage"])
+usage_router = APIRouter(tags=["API Keys & Usage"])
 
 
 class CreateApiKeyPayload(BaseModel):
@@ -64,6 +65,13 @@ async def revoke_api_key(request: Request, key_id: str) -> dict:
     return {"success": True, "key": revoked}
 
 
+def _resolve_rate_limit_snapshot(request: Request) -> dict[str, int] | None:
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        return limiter.inspect(request)
+    return getattr(request.state, "rate_limit_snapshot", None)
+
+
 @router.get("/usage")
 async def get_usage(request: Request) -> dict:
     user = await require_jwt_or_api_key_user(request)
@@ -72,7 +80,24 @@ async def get_usage(request: Request) -> dict:
         request.app.state.api_keys,
         request.app.state.credits,
     )
-    return await service.get_usage_summary(user.user_id)
+    return await service.get_usage_summary(
+        user.user_id,
+        rate_limit_snapshot=_resolve_rate_limit_snapshot(request),
+    )
+
+
+@usage_router.get("/usage")
+async def get_api_usage_root(request: Request) -> dict:
+    user = await require_jwt_or_api_key_user(request)
+    service = ApiKeyService(
+        request.app.state.settings,
+        request.app.state.api_keys,
+        request.app.state.credits,
+    )
+    return await service.get_usage_summary(
+        user.user_id,
+        rate_limit_snapshot=_resolve_rate_limit_snapshot(request),
+    )
 
 
 @router.get("/credits")

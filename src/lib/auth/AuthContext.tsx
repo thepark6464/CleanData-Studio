@@ -94,6 +94,9 @@ export interface PaymentRecord {
 interface AuthContextValue {
   isConfigured: boolean;
   isLoading: boolean;
+  isPasswordRecovery: boolean;
+  authCallbackError: string | null;
+  clearAuthCallbackError: () => void;
   session: Session | null;
   user: User | null;
   profile: UserProfile | null;
@@ -112,6 +115,7 @@ interface AuthContextValue {
   ) => Promise<{ error: string | null; requiresEmailVerification: boolean }>;
   resendVerificationEmail: (email: string) => Promise<{ error: string | null }>;
   resetPassword: (email: string) => Promise<{ error: string | null }>;
+  updatePassword: (newPassword: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
   updateProfile: (fullName: string) => Promise<{ error: string | null }>;
   updatePreferences: (prefs: UserPreferences) => Promise<{ error: string | null }>;
@@ -121,9 +125,40 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function detectRecoveryFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hash = window.location.hash.toLowerCase();
+  const search = window.location.search.toLowerCase();
+  return hash.includes('type=recovery') || search.includes('type=recovery');
+}
+
+function extractAuthErrorFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashRaw = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const hashParams = new URLSearchParams(hashRaw);
+
+  const rawDesc =
+    searchParams.get('error_description') ||
+    hashParams.get('error_description') ||
+    searchParams.get('error') ||
+    hashParams.get('error');
+
+  if (!rawDesc) return null;
+  return rawDesc.replace(/\+/g, ' ');
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const isConfigured = isSupabaseConfigured();
   const [isLoading, setIsLoading] = useState<boolean>(isConfigured);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() =>
+    detectRecoveryFromUrl(),
+  );
+  const [authCallbackError, setAuthCallbackError] = useState<string | null>(() =>
+    extractAuthErrorFromUrl(),
+  );
   const [isDataLoading, setIsDataLoading] = useState<boolean>(false);
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -134,6 +169,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [jobs, setJobs] = useState<CleaningJobRecord[]>([]);
   const [transactions, setTransactions] = useState<CreditTransactionRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
+
+  const clearAuthCallbackError = useCallback(() => {
+    setAuthCallbackError(null);
+  }, []);
 
   const clearAccountData = useCallback(() => {
     setProfile(null);
@@ -206,6 +245,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (profileRes.data) {
         setProfile(profileRes.data as UserProfile);
+      } else {
+        setProfile({
+          id: user.id,
+          email: user.email ?? null,
+          full_name: (user.user_metadata?.full_name as string | undefined) ?? null,
+          deletion_requested_at: null,
+          deletion_reason: null,
+          created_at: user.created_at,
+        });
       }
       if (walletRes.data) {
         setWallet(walletRes.data as CreditWallet);
@@ -293,15 +341,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(({ data, error }) => {
       if (!mounted) return;
+      if (error) {
+        setAuthCallbackError(error.message);
+      }
       setSession(data.session ?? null);
       setUser(data.session?.user ?? null);
       setIsLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!mounted) return;
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+      } else if (event === 'SIGNED_OUT') {
+        setIsPasswordRecovery(false);
+      }
       setSession(nextSession ?? null);
       setUser(nextSession?.user ?? null);
       setIsLoading(false);
@@ -371,9 +427,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: error ? error.message : null };
   };
 
+  const updatePassword = async (newPassword: string) => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return { error: 'Supabase Auth is not configured.' };
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (!error) {
+      setIsPasswordRecovery(false);
+    }
+    return { error: error ? error.message : null };
+  };
+
   const signOut = async () => {
     const supabase = getSupabaseClient();
-    if (!supabase) return;
+    setIsPasswordRecovery(false);
+    if (!supabase) {
+      clearAccountData();
+      return;
+    }
     await supabase.auth.signOut();
     clearAccountData();
   };
@@ -381,10 +451,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateProfile = async (fullName: string) => {
     const supabase = getSupabaseClient();
     if (!supabase || !user) return { error: 'Not signed in.' };
+    const trimmed = fullName.trim();
     const { error } = await supabase
       .from('profiles')
-      .update({ full_name: fullName.trim() })
-      .eq('id', user.id);
+      .upsert({ id: user.id, email: user.email ?? null, full_name: trimmed }, { onConflict: 'id' });
     if (!error) {
       await refreshAccountData();
     }
@@ -442,6 +512,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         isConfigured,
         isLoading,
+        isPasswordRecovery,
+        authCallbackError,
+        clearAuthCallbackError,
         session,
         user,
         profile,
@@ -456,6 +529,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signUp,
         resendVerificationEmail,
         resetPassword,
+        updatePassword,
         signOut,
         updateProfile,
         updatePreferences,

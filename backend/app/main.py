@@ -1,17 +1,39 @@
 import uuid
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings, get_settings
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware, SlidingWindowRateLimiter
 from app.routes import account, api_keys, billing, files, health, jobs
 from app.services.api_keys import InMemoryApiKeyStore
 from app.services.credits import InMemoryCreditStore
 from app.services.storage import LocalPrivateStorage
 from app.utils.security import ApiServiceError
+
+STRICT_API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+SWAGGER_DOCS_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net; "
+    "font-src 'self' https://cdn.jsdelivr.net; "
+    "connect-src 'self'; "
+    "worker-src 'self' blob:; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "object-src 'none'"
+)
+DOCS_PATHS = {
+    "/api/docs",
+    "/api/docs/oauth2-redirect",
+    "/api/redoc",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+}
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -28,9 +50,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
-        )
+
+        normalized_path = request.url.path.rstrip("/") or "/"
+        if normalized_path in DOCS_PATHS:
+            response.headers["Content-Security-Policy"] = SWAGGER_DOCS_CSP
+        else:
+            response.headers["Content-Security-Policy"] = STRICT_API_CSP
+
         if self.environment == "production":
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains; preload"
@@ -53,8 +79,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.storage = LocalPrivateStorage(cfg.storage_dir)
     app.state.credits = InMemoryCreditStore()
     app.state.api_keys = InMemoryApiKeyStore()
+    rate_limiter = SlidingWindowRateLimiter(requests_per_minute=cfg.rate_limit_per_min)
+    app.state.rate_limiter = rate_limiter
 
     allowed_origins = [o.strip() for o in cfg.allowed_origin.split(",") if o.strip()]
+    if cfg.environment == "production" and "https://cleandata-studio.vercel.app" not in allowed_origins:
+        allowed_origins.append("https://cleandata-studio.vercel.app")
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -62,7 +93,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
     )
-    app.add_middleware(RateLimitMiddleware, requests_per_minute=cfg.rate_limit_per_min)
+    app.add_middleware(
+        RateLimitMiddleware,
+        requests_per_minute=cfg.rate_limit_per_min,
+        limiter=rate_limiter,
+    )
     app.add_middleware(SecurityHeadersMiddleware, environment=cfg.environment)
 
     @app.exception_handler(ApiServiceError)
@@ -97,13 +132,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
-    # All public API endpoints share the /api prefix for the single-domain deployment.
+    # All public API endpoints share the /api prefix for the Vercel single-domain deployment.
     app.include_router(health.router, prefix="/api")
     app.include_router(account.router, prefix="/api")
     app.include_router(billing.router, prefix="/api")
     app.include_router(api_keys.router, prefix="/api")
+    app.include_router(api_keys.usage_router, prefix="/api")
     app.include_router(files.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
+
+    # Root-level compatibility aliases for local tests or stripped-prefix proxies (omitted from OpenAPI)
+    root_compat_router = APIRouter(include_in_schema=False)
+    root_compat_router.include_router(health.router)
+    root_compat_router.include_router(account.router)
+    root_compat_router.include_router(billing.router)
+    root_compat_router.include_router(api_keys.router)
+    root_compat_router.include_router(api_keys.usage_router)
+    root_compat_router.include_router(files.router)
+    root_compat_router.include_router(jobs.router)
+    app.include_router(root_compat_router)
+
     return app
 
 

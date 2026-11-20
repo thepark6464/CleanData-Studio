@@ -14,6 +14,7 @@ import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api
 import type { ApiKeyMetadata, ApiUsageItem } from '../lib/api/types';
 import { useAuth } from '../lib/auth/AuthContext';
 import type { AppRoute } from '../lib/router';
+import { setIntendedRoute } from '../lib/router';
 import { getSupabaseClient } from '../lib/supabase/client';
 
 interface ApiKeysPageProps {
@@ -44,6 +45,7 @@ export const ApiKeysPage: React.FC<ApiKeysPageProps> = ({ onNavigate }) => {
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
+      setIntendedRoute('/dashboard/api-keys');
       onNavigate('/auth');
     }
   }, [isConfigured, isLoading, user, onNavigate]);
@@ -157,7 +159,24 @@ export const ApiKeysPage: React.FC<ApiKeysPageProps> = ({ onNavigate }) => {
     window.setTimeout(() => setCopied(false), 1800);
   };
 
-  if (!isConfigured || isLoading || !user) {
+  if (!isConfigured) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-3">
+          <h1 className="font-display text-xl font-bold text-slate-950">
+            API Keys Unavailable Without Supabase Auth
+          </h1>
+          <p className="text-sm text-slate-600">
+            Configure <code className="font-mono text-xs">VITE_SUPABASE_URL</code> and{' '}
+            <code className="font-mono text-xs">VITE_SUPABASE_ANON_KEY</code> to manage API keys
+            and view request usage.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading || !user) {
     return (
       <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
         <div className="h-44 animate-pulse rounded-xl bg-slate-200" />
