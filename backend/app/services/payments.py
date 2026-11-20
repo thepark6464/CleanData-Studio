@@ -11,7 +11,47 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.utils.security import ApiServiceError
+from app.utils.security import ApiServiceError, log_event
+
+
+_SENSITIVE_KEY_RE = re.compile(
+    r"(secret|token|key|password|authorization|credential|signature|passphrase|client_id|app_id)",
+    re.I,
+)
+
+
+def _scrub_secret_values(text: str, secret_values: tuple[str, ...]) -> str:
+    scrubbed = text
+    for secret in secret_values:
+        if secret and len(secret) >= 4 and secret in scrubbed:
+            scrubbed = scrubbed.replace(secret, "[REDACTED]")
+    return scrubbed
+
+
+def _redact_sensitive(value: Any, secret_values: tuple[str, ...] = ()) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(k): (
+                "[REDACTED]"
+                if _SENSITIVE_KEY_RE.search(str(k))
+                else _redact_sensitive(v, secret_values)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(item, secret_values) for item in value]
+    if isinstance(value, str):
+        return _scrub_secret_values(value, secret_values)
+    return value
+
+
+def _safe_cashfree_body(resp: httpx.Response, secret_values: tuple[str, ...] = ()) -> Any:
+    try:
+        parsed = resp.json()
+        return _redact_sensitive(parsed, secret_values)
+    except Exception:
+        text = (resp.text or "").strip()
+        return _scrub_secret_values(text, secret_values) if text else "<empty>"
 
 
 def _sanitize_phone(raw_phone: str | None) -> str:
@@ -62,6 +102,9 @@ class OrderVerificationResult:
     amount_paise: int
     currency: str
     cf_payment_id: str | None = None
+    customer_email: str | None = None
+    customer_id: str | None = None
+    order_tags: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +152,7 @@ class PaymentProviderAdapter(ABC):
         amount_paise: int,
         currency: str,
         receipt_id: str,
+        request_id: str | None = None,
     ) -> CheckoutSessionResult: ...
 
     @abstractmethod
@@ -122,18 +166,23 @@ class PaymentProviderAdapter(ABC):
         amount_paise: int,
         currency: str,
         receipt_id: str,
+        request_id: str | None = None,
     ) -> CheckoutSessionResult: ...
 
     @abstractmethod
-    async def fetch_order_status(self, order_id: str) -> OrderVerificationResult: ...
+    async def fetch_order_status(
+        self, order_id: str, *, request_id: str | None = None
+    ) -> OrderVerificationResult: ...
 
     @abstractmethod
     async def fetch_subscription_status(
-        self, subscription_id: str
+        self, subscription_id: str, *, request_id: str | None = None
     ) -> SubscriptionVerificationResult: ...
 
     @abstractmethod
-    async def cancel_subscription(self, subscription_id: str) -> dict[str, Any]: ...
+    async def cancel_subscription(
+        self, subscription_id: str, *, request_id: str | None = None
+    ) -> dict[str, Any]: ...
 
     @abstractmethod
     def verify_webhook_signature(
@@ -179,6 +228,27 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             "x-client-secret": self.secret_key,
         }
 
+    def _log_cashfree_http_error(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        resp: httpx.Response,
+        request_id: str | None = None,
+        expected_not_found: bool = False,
+    ) -> None:
+        secret_values = (self.secret_key, self.webhook_secret, self.app_id)
+        log_event(
+            "cashfree_plan_not_found" if expected_not_found else "cashfree_api_error",
+            request_id or "cashfree",
+            method=method,
+            endpoint=endpoint,
+            status_code=resp.status_code,
+            cashfree_env=self.env,
+            api_version=self.api_version,
+            response_body=_safe_cashfree_body(resp, secret_values=secret_values),
+        )
+
     async def create_order(
         self,
         *,
@@ -189,6 +259,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         amount_paise: int,
         currency: str,
         receipt_id: str,
+        request_id: str | None = None,
     ) -> CheckoutSessionResult:
         self._ensure_configured()
 
@@ -218,12 +289,19 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         }
 
         async with httpx.AsyncClient(timeout=15.0) as client:
+            endpoint = f"{self.base_url}/orders"
             resp = await client.post(
-                f"{self.base_url}/orders",
+                endpoint,
                 headers=self._headers(),
                 json=payload,
             )
             if resp.status_code >= 400:
+                self._log_cashfree_http_error(
+                    method="POST",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -233,6 +311,12 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             resolved_order_id = str(data.get("order_id") or order_id)
             payment_session_id = str(data.get("payment_session_id") or "")
             if not payment_session_id:
+                self._log_cashfree_http_error(
+                    method="POST",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -249,25 +333,36 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 payment_session_id=payment_session_id,
             )
 
-    async def _ensure_subscription_plan(
+    async def _ensure_plan(
         self,
         client: httpx.AsyncClient,
         *,
         plan_name: str,
         amount_paise: int,
         currency: str,
+        request_id: str | None = None,
     ) -> str:
         plan_id = _plan_id_for_name(plan_name)
+        get_endpoint = f"{self.base_url}/plans/{plan_id}"
         existing = await client.get(
-            f"{self.base_url}/plans/{plan_id}",
+            get_endpoint,
             headers=self._headers(),
         )
-        if existing.status_code == 200:
+        if 200 <= existing.status_code < 300:
             return plan_id
 
+        self._log_cashfree_http_error(
+            method="GET",
+            endpoint=get_endpoint,
+            resp=existing,
+            request_id=request_id,
+            expected_not_found=(existing.status_code == 404),
+        )
+
         amount_rupees = round(amount_paise / 100.0, 2)
+        post_endpoint = f"{self.base_url}/plans"
         create_resp = await client.post(
-            f"{self.base_url}/plans",
+            post_endpoint,
             headers=self._headers(),
             json={
                 "plan_id": plan_id,
@@ -281,7 +376,14 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 "plan_note": f"CleanData Studio {plan_name} monthly subscription",
             },
         )
-        if create_resp.status_code in (200, 201, 409):
+        if not (200 <= create_resp.status_code < 300):
+            self._log_cashfree_http_error(
+                method="POST",
+                endpoint=post_endpoint,
+                resp=create_resp,
+                request_id=request_id,
+            )
+        if 200 <= create_resp.status_code < 300 or create_resp.status_code == 409:
             return plan_id
 
         raise ApiServiceError(
@@ -289,6 +391,8 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             "PAYMENT_GATEWAY_ERROR",
             f"Unable to provision Cashfree Subscription plan '{plan_id}'.",
         )
+
+    _ensure_subscription_plan = _ensure_plan
 
     async def create_subscription(
         self,
@@ -300,17 +404,19 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         amount_paise: int,
         currency: str,
         receipt_id: str,
+        request_id: str | None = None,
     ) -> CheckoutSessionResult:
         self._ensure_configured()
         subscription_id = f"cd_sub_{receipt_id}"[:45]
         amount_rupees = round(amount_paise / 100.0, 2)
 
         async with httpx.AsyncClient(timeout=20.0) as client:
-            plan_id = await self._ensure_subscription_plan(
+            plan_id = await self._ensure_plan(
                 client,
                 plan_name=plan_name,
                 amount_paise=amount_paise,
                 currency=currency,
+                request_id=request_id,
             )
 
             customer_details: dict[str, str] = {
@@ -347,12 +453,19 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 },
             }
 
+            endpoint = f"{self.base_url}/subscriptions"
             resp = await client.post(
-                f"{self.base_url}/subscriptions",
+                endpoint,
                 headers=self._headers(),
                 json=payload,
             )
-            if resp.status_code >= 400:
+            if not (200 <= resp.status_code < 300):
+                self._log_cashfree_http_error(
+                    method="POST",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -364,6 +477,12 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 data.get("subscription_session_id") or data.get("subs_session_id") or ""
             )
             if not subs_session_id:
+                self._log_cashfree_http_error(
+                    method="POST",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -385,16 +504,31 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 cashfree_mode=self.env,
             )
 
-    async def fetch_order_status(self, order_id: str) -> OrderVerificationResult:
+    async def fetch_order_status(
+        self, order_id: str, *, request_id: str | None = None
+    ) -> OrderVerificationResult:
         self._ensure_configured()
         async with httpx.AsyncClient(timeout=15.0) as client:
+            endpoint = f"{self.base_url}/orders/{order_id}"
             resp = await client.get(
-                f"{self.base_url}/orders/{order_id}",
+                endpoint,
                 headers=self._headers(),
             )
             if resp.status_code == 404:
+                self._log_cashfree_http_error(
+                    method="GET",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(404, "ORDER_NOT_FOUND", "Cashfree order not found.")
             if resp.status_code >= 400:
+                self._log_cashfree_http_error(
+                    method="GET",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -403,8 +537,9 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             order_data = resp.json()
 
             cf_payment_id: str | None = None
+            pay_endpoint = f"{self.base_url}/orders/{order_id}/payments"
             payments_resp = await client.get(
-                f"{self.base_url}/orders/{order_id}/payments",
+                pay_endpoint,
                 headers=self._headers(),
             )
             if payments_resp.status_code == 200:
@@ -416,6 +551,24 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                             break
                     if not cf_payment_id and payments_list and isinstance(payments_list[0], dict):
                         cf_payment_id = str(payments_list[0].get("cf_payment_id") or "") or None
+            elif payments_resp.status_code >= 400:
+                self._log_cashfree_http_error(
+                    method="GET",
+                    endpoint=pay_endpoint,
+                    resp=payments_resp,
+                    request_id=request_id,
+                )
+
+            customer_details = (
+                order_data.get("customer_details")
+                if isinstance(order_data.get("customer_details"), dict)
+                else {}
+            )
+            order_tags = (
+                order_data.get("order_tags")
+                if isinstance(order_data.get("order_tags"), dict)
+                else None
+            )
 
             return OrderVerificationResult(
                 order_id=str(order_data.get("order_id") or order_id),
@@ -423,20 +576,36 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 amount_paise=_rupees_to_paise(order_data.get("order_amount")) or 0,
                 currency=str(order_data.get("order_currency") or "INR").upper(),
                 cf_payment_id=cf_payment_id,
+                customer_email=str(customer_details.get("customer_email") or "").strip() or None,
+                customer_id=str(customer_details.get("customer_id") or "").strip() or None,
+                order_tags=order_tags,
             )
 
     async def fetch_subscription_status(
-        self, subscription_id: str
+        self, subscription_id: str, *, request_id: str | None = None
     ) -> SubscriptionVerificationResult:
         self._ensure_configured()
         async with httpx.AsyncClient(timeout=15.0) as client:
+            endpoint = f"{self.base_url}/subscriptions/{subscription_id}"
             resp = await client.get(
-                f"{self.base_url}/subscriptions/{subscription_id}",
+                endpoint,
                 headers=self._headers(),
             )
             if resp.status_code == 404:
+                self._log_cashfree_http_error(
+                    method="GET",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(404, "SUBSCRIPTION_NOT_FOUND", "Cashfree subscription not found.")
             if resp.status_code >= 400:
+                self._log_cashfree_http_error(
+                    method="GET",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -470,8 +639,9 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             # Query subscription payments list when ACTIVE to resolve authoritative cf_payment_id if absent
             if not cf_payment_id and sub_status == "ACTIVE":
                 try:
+                    pay_endpoint = f"{self.base_url}/subscriptions/{subscription_id}/payments"
                     pay_resp = await client.get(
-                        f"{self.base_url}/subscriptions/{subscription_id}/payments",
+                        pay_endpoint,
                         headers=self._headers(),
                     )
                     if pay_resp.status_code == 200:
@@ -484,6 +654,13 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                                         or None
                                     )
                                     break
+                    elif pay_resp.status_code >= 400:
+                        self._log_cashfree_http_error(
+                            method="GET",
+                            endpoint=pay_endpoint,
+                            resp=pay_resp,
+                            request_id=request_id,
+                        )
                 except httpx.HTTPError:
                     pass
 
@@ -509,11 +686,14 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 authorization_status=str(auth_details.get("authorization_status") or "").upper() or None,
             )
 
-    async def cancel_subscription(self, subscription_id: str) -> dict[str, Any]:
+    async def cancel_subscription(
+        self, subscription_id: str, *, request_id: str | None = None
+    ) -> dict[str, Any]:
         self._ensure_configured()
         async with httpx.AsyncClient(timeout=15.0) as client:
+            endpoint = f"{self.base_url}/subscriptions/{subscription_id}/manage"
             resp = await client.post(
-                f"{self.base_url}/subscriptions/{subscription_id}/manage",
+                endpoint,
                 headers=self._headers(),
                 json={
                     "subscription_id": subscription_id,
@@ -521,6 +701,12 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 },
             )
             if resp.status_code >= 400:
+                self._log_cashfree_http_error(
+                    method="POST",
+                    endpoint=endpoint,
+                    resp=resp,
+                    request_id=request_id,
+                )
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -829,6 +1015,7 @@ class TestHmacPaymentAdapter(PaymentProviderAdapter):
         amount_paise: int,
         currency: str,
         receipt_id: str,
+        request_id: str | None = None,
     ) -> CheckoutSessionResult:
         order_id = f"cd_ord_{uuid.uuid4().hex[:14]}"
         self.orders[order_id] = OrderVerificationResult(
@@ -836,6 +1023,9 @@ class TestHmacPaymentAdapter(PaymentProviderAdapter):
             order_status="ACTIVE",
             amount_paise=amount_paise,
             currency=currency,
+            customer_email=user_email,
+            customer_id=user_id,
+            order_tags={"user_id": user_id, "kind": "credit_pack", "item_name": item_name},
         )
         return CheckoutSessionResult(
             provider=self.provider_name,
@@ -857,6 +1047,7 @@ class TestHmacPaymentAdapter(PaymentProviderAdapter):
         amount_paise: int,
         currency: str,
         receipt_id: str,
+        request_id: str | None = None,
     ) -> CheckoutSessionResult:
         sub_id = f"cd_sub_{uuid.uuid4().hex[:14]}"
         self.subscriptions[sub_id] = SubscriptionVerificationResult(
@@ -865,6 +1056,9 @@ class TestHmacPaymentAdapter(PaymentProviderAdapter):
             plan_id=_plan_id_for_name(plan_name),
             amount_paise=amount_paise,
             currency=currency,
+            customer_email=user_email,
+            customer_id=user_id,
+            subscription_tags={"user_id": user_id, "plan_name": plan_name},
         )
         return CheckoutSessionResult(
             provider=self.provider_name,
@@ -878,19 +1072,23 @@ class TestHmacPaymentAdapter(PaymentProviderAdapter):
             cashfree_mode="sandbox",
         )
 
-    async def fetch_order_status(self, order_id: str) -> OrderVerificationResult:
+    async def fetch_order_status(
+        self, order_id: str, *, request_id: str | None = None
+    ) -> OrderVerificationResult:
         if order_id in self.orders:
             return self.orders[order_id]
         raise ApiServiceError(404, "ORDER_NOT_FOUND", "Order not found.")
 
     async def fetch_subscription_status(
-        self, subscription_id: str
+        self, subscription_id: str, *, request_id: str | None = None
     ) -> SubscriptionVerificationResult:
         if subscription_id in self.subscriptions:
             return self.subscriptions[subscription_id]
         raise ApiServiceError(404, "SUBSCRIPTION_NOT_FOUND", "Subscription not found.")
 
-    async def cancel_subscription(self, subscription_id: str) -> dict[str, Any]:
+    async def cancel_subscription(
+        self, subscription_id: str, *, request_id: str | None = None
+    ) -> dict[str, Any]:
         self.canceled_subscriptions.append(subscription_id)
         if subscription_id in self.subscriptions:
             cur = self.subscriptions[subscription_id]

@@ -477,11 +477,11 @@ class InMemoryCreditStore:
         dedup_key = (provider, event_id)
         if dedup_key in self.webhook_events:
             return {"status": "already_processed"}
-        self.webhook_events.add(dedup_key)
 
         payment_id = self.payment_by_provider_id.get(provider_payment_id)
         if not payment_id:
             return {"status": "payment_not_found"}
+        self.webhook_events.add(dedup_key)
         payment = self.payments[payment_id]
         meta = payload_meta or {}
 

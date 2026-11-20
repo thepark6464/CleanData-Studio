@@ -331,7 +331,14 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     e.preventDefault();
     const cleaned = manualSubId.trim();
     if (!cleaned) {
-      setCheckoutError('Enter your Cashfree Subscription ID (for example, cd_sub_...) to verify.');
+      setCheckoutError('Enter your Cashfree Order ID (cd_ord_...) or Subscription ID (cd_sub_...) to verify.');
+      return;
+    }
+    if (cleaned.startsWith('cd_ord_')) {
+      await runServerVerification({
+        kind: 'credit_pack',
+        order_id: cleaned,
+      });
       return;
     }
     await runServerVerification({
@@ -642,7 +649,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
         <div className="border-t border-slate-100 pt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-slate-600">
-            Completed a Cashfree subscription checkout and don&apos;t see it reflected yet?
+            Completed a Cashfree payment or subscription checkout and don&apos;t see credits yet?
           </p>
           <button
             type="button"
@@ -650,7 +657,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
             className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-800 cursor-pointer self-start sm:self-auto"
           >
             <SearchCheck className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>{showManualVerify ? 'Hide Subscription Check' : 'Verify Cashfree Subscription ID'}</span>
+            <span>{showManualVerify ? 'Hide Cashfree Lookup' : 'Verify Cashfree Order / Subscription ID'}</span>
           </button>
         </div>
 
@@ -660,8 +667,8 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
               type="text"
               value={manualSubId}
               onChange={(e) => setManualSubId(e.target.value)}
-              placeholder="Enter Cashfree subscription ID (e.g. cd_sub_...)"
-              aria-label="Cashfree subscription ID to verify"
+              placeholder="Enter Cashfree Order ID (cd_ord_...) or Subscription ID (cd_sub_...)"
+              aria-label="Cashfree Order or Subscription ID to verify"
               className="w-full sm:flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
             />
             <button

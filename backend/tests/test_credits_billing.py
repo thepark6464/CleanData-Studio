@@ -841,3 +841,281 @@ def test_vercel_multi_service_routing_configuration():
     api_rule = next(r for r in rewrites if r["source"] == "/api/(.*)")
     assert api_rule["destination"]["service"] == "backend"
 
+
+def test_production_return_url_and_vercel_fail_closed(monkeypatch, tmp_path):
+    # Even when ALLOWED_ORIGIN defaults to localhost, production never uses localhost in return_url
+    prod_cfg = Settings(environment="production", allowed_origin="http://localhost:3000")
+    assert prod_cfg.resolved_frontend_origin == "https://cleandata-studio.vercel.app"
+
+    # When VERCEL=1 is present, missing Supabase fails closed with 503 even if ENVIRONMENT wasn't set
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("VERCEL_ENV", "production")
+    cfg = Settings(
+        environment="development",
+        storage_dir=str(tmp_path),
+        supabase_jwt_secret=TEST_JWT_SECRET,
+        supabase_url="",
+        supabase_service_role_key="",
+        payment_provider="cashfree",
+        cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+    )
+    assert cfg.is_vercel_runtime is True
+    assert cfg.resolved_frontend_origin == "https://cleandata-studio.vercel.app"
+    client = TestClient(create_app(cfg))
+    resp = client.get(
+        "/api/v1/billing/summary",
+        headers={"Authorization": f"Bearer {_make_jwt('vercel-user-1')}"},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "BILLING_DATABASE_NOT_CONFIGURED"
+
+
+def test_reconcile_missing_credit_pack_order_via_verify_and_webhook(tmp_path):
+    client = _make_client(tmp_path)
+    uid = "user-order-rec-1"
+    headers = {"Authorization": f"Bearer {_make_jwt(uid, 'pack@example.com')}"}
+    order_id = "cd_ord_missing_db_1"
+
+    client.app.state.payment_adapter.orders[order_id] = OrderVerificationResult(
+        order_id=order_id,
+        order_status="PAID",
+        amount_paise=14900,
+        currency="INR",
+        cf_payment_id="cf_ord_pay_missing_1",
+        customer_email="pack@example.com",
+        customer_id=uid,
+        order_tags={"user_id": uid, "kind": "credit_pack", "item_name": "50 Credits"},
+    )
+
+    # First verify via webhook when DB has no pending row -> reconciles and grants 50 credits
+    wh_body = json.dumps(
+        {
+            "type": "PAYMENT_SUCCESS_WEBHOOK",
+            "event_id": "evt_ord_missing_1",
+            "data": {
+                "order": {"order_id": order_id, "order_amount": 149.0, "order_currency": "INR"},
+                "payment": {
+                    "cf_payment_id": "cf_ord_pay_missing_1",
+                    "payment_status": "SUCCESS",
+                    "payment_amount": 149.0,
+                    "payment_currency": "INR",
+                },
+            },
+        }
+    ).encode("utf-8")
+    wh_resp = client.post(
+        "/api/v1/webhooks/payments",
+        content=wh_body,
+        headers=_sign_cashfree_webhook(wh_body),
+    )
+    assert wh_resp.status_code == 200
+    assert wh_resp.json()["result"]["status"] == "processed"
+
+    summary = client.get("/api/v1/billing/summary", headers=headers).json()
+    assert summary["wallet"]["purchased_balance"] == 50
+
+    # Calling /api/v1/billing/verify for an already-paid missing-row order also reconciles & credits cleanly
+    order_id_2 = "cd_ord_missing_db_2"
+    client.app.state.payment_adapter.orders[order_id_2] = OrderVerificationResult(
+        order_id=order_id_2,
+        order_status="PAID",
+        amount_paise=4900,
+        currency="INR",
+        cf_payment_id="cf_ord_pay_missing_2",
+        customer_email="pack@example.com",
+        customer_id=uid,
+        order_tags={"user_id": uid, "kind": "credit_pack", "item_name": "10 Credits"},
+    )
+    ver_resp = client.post(
+        "/api/v1/billing/verify",
+        json={"kind": "credit_pack", "order_id": order_id_2},
+        headers=headers,
+    )
+    assert ver_resp.status_code == 200
+    assert ver_resp.json()["status"] == "paid"
+    assert ver_resp.json()["wallet"]["purchased_balance"] == 60
+
+
+def test_cashfree_logs_sanitized_non_2xx_response_body_without_secrets():
+    import asyncio
+    import pytest
+    from app.utils.security import ApiServiceError
+
+    cfg = Settings(
+        environment="production",
+        cashfree_app_id="cf_app_live_test",
+        cashfree_secret_key="super_secret_should_never_log",
+        cashfree_env="production",
+        cashfree_api_version="2025-01-01",
+    )
+    adapter = CashfreePaymentAdapter(cfg)
+
+    class _FakeResp:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return self._payload
+
+    long_detail = "Detailed gateway diagnostic: " + ("x" * 600)
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _FakeResp(
+                400,
+                {
+                    "message": long_detail,
+                    "code": "subscriptions_not_enabled",
+                    "type": "invalid_request_error",
+                    "client_secret": "should_redact",
+                    "nested": {"signature": "sig_redact", "api_key": "key_redact"},
+                },
+            )
+
+        async def post(self, url, **kwargs):
+            return _FakeResp(
+                400,
+                {
+                    "message": "plan_max_amount invalid for cf_app_live_test",
+                    "code": "request_failed",
+                    "authorization": "Bearer secret_token",
+                    "app_id": "cf_app_live_test",
+                },
+            )
+
+    logged_events: list[tuple[str, dict]] = []
+
+    def _capture_log(event: str, request_id: str, **meta):
+        logged_events.append((event, {"request_id": request_id, **meta}))
+
+    with patch("app.services.payments.httpx.AsyncClient", _FakeAsyncClient), patch(
+        "app.services.payments.log_event", _capture_log
+    ):
+        with pytest.raises(ApiServiceError) as exc_info:
+            asyncio.run(
+                adapter.create_subscription(
+                    user_id="u_1",
+                    user_email="u@example.com",
+                    customer_phone=None,
+                    plan_name="Pro",
+                    amount_paise=79900,
+                    currency="INR",
+                    receipt_id="rec1234",
+                    request_id="req_cf_diag_1",
+                )
+            )
+    assert exc_info.value.status_code == 502
+    assert len(logged_events) == 2
+    assert logged_events[0][0] == "cashfree_api_error"
+    assert logged_events[0][1]["status_code"] == 400
+    assert logged_events[0][1]["response_body"]["code"] == "subscriptions_not_enabled"
+    assert logged_events[0][1]["response_body"]["message"] == long_detail
+    assert logged_events[0][1]["response_body"]["client_secret"] == "[REDACTED]"
+    assert logged_events[0][1]["response_body"]["nested"]["signature"] == "[REDACTED]"
+    assert logged_events[0][1]["response_body"]["nested"]["api_key"] == "[REDACTED]"
+    assert "super_secret_should_never_log" not in json.dumps(logged_events)
+    assert "cf_app_live_test" not in json.dumps(logged_events)
+    assert logged_events[1][0] == "cashfree_api_error"
+    assert logged_events[1][1]["status_code"] == 400
+    assert logged_events[1][1]["response_body"]["authorization"] == "[REDACTED]"
+    assert logged_events[1][1]["response_body"]["app_id"] == "[REDACTED]"
+    assert "[REDACTED]" in logged_events[1][1]["response_body"]["message"]
+    assert logged_events[1][1]["request_id"] == "req_cf_diag_1"
+
+
+def test_cashfree_create_subscription_logs_non_2xx_from_plans_and_subscriptions():
+    import asyncio
+    import pytest
+    from app.utils.security import ApiServiceError
+
+    cfg = Settings(
+        environment="production",
+        cashfree_app_id="cf_app_live_test",
+        cashfree_secret_key="live_secret_value_never_logged",
+        cashfree_env="production",
+        cashfree_api_version="2025-01-01",
+    )
+    adapter = CashfreePaymentAdapter(cfg)
+
+    class _FakeResp:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return self._payload
+
+    class _FakeClientSubFailure:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _FakeResp(404, {"code": "plan_not_found", "message": "Plan does not exist"})
+
+        async def post(self, url, **kwargs):
+            if url.endswith("/plans"):
+                return _FakeResp(409, {"code": "plan_already_exists", "message": "Conflict", "access_token": "tok"})
+            return _FakeResp(
+                302,
+                {
+                    "code": "redirect_unexpected",
+                    "message": "Unexpected non-2xx from /subscriptions",
+                    "secret_key": "must_redact",
+                },
+            )
+
+    logged_events: list[tuple[str, dict]] = []
+
+    def _capture_log(event: str, request_id: str, **meta):
+        logged_events.append((event, {"request_id": request_id, **meta}))
+
+    with patch("app.services.payments.httpx.AsyncClient", _FakeClientSubFailure), patch(
+        "app.services.payments.log_event", _capture_log
+    ):
+        assert hasattr(adapter, "_ensure_plan")
+        with pytest.raises(ApiServiceError) as exc_info:
+            asyncio.run(
+                adapter.create_subscription(
+                    user_id="u_2",
+                    user_email="u2@example.com",
+                    customer_phone=None,
+                    plan_name="Pro",
+                    amount_paise=79900,
+                    currency="INR",
+                    receipt_id="rec_sub_fail",
+                    request_id="req_cf_diag_2",
+                )
+            )
+
+    assert exc_info.value.status_code == 502
+    assert len(logged_events) == 3
+    # 1. GET /plans/{plan_id} 404
+    assert logged_events[0][0] == "cashfree_plan_not_found"
+    assert logged_events[0][1]["status_code"] == 404
+    # 2. POST /plans 409 (non-2xx logged even though plan provisioning continues idempotently)
+    assert logged_events[1][0] == "cashfree_api_error"
+    assert logged_events[1][1]["status_code"] == 409
+    assert logged_events[1][1]["response_body"]["access_token"] == "[REDACTED]"
+    # 3. POST /subscriptions non-2xx (e.g., 302)
+    assert logged_events[2][0] == "cashfree_api_error"
+    assert logged_events[2][1]["status_code"] == 302
+    assert logged_events[2][1]["response_body"]["code"] == "redirect_unexpected"
+    assert logged_events[2][1]["response_body"]["secret_key"] == "[REDACTED]"
+    assert "live_secret_value_never_logged" not in json.dumps(logged_events)
+
+

@@ -13,8 +13,9 @@ from app.models import (
     CheckoutVerifyResponse,
     SubscriptionCancelResponse,
 )
-from app.services.credits import PACK_CATALOG, PLAN_CATALOG, PlanSpec
+from app.services.credits import PACK_CATALOG, PLAN_CATALOG, PackSpec, PlanSpec
 from app.services.payments import (
+    OrderVerificationResult,
     PaymentProviderAdapter,
     SubscriptionVerificationResult,
     _plan_id_for_name,
@@ -40,14 +41,14 @@ def _resolve_adapter(request: Request) -> PaymentProviderAdapter:
 
 def _require_billing_db(request: Request) -> SupabaseServiceClient | None:
     """
-    Never allow silent in-memory billing fallback outside local development/test runs.
-    In production/staging, missing Supabase configuration fails safely with HTTP 503.
+    Never allow silent in-memory billing fallback on Vercel serverless or non-dev/test runs.
+    Missing Supabase configuration fails safely with HTTP 503.
     """
     settings = request.app.state.settings
     db = SupabaseServiceClient(settings)
     if db.configured:
         return db
-    if settings.environment in {"test", "development"}:
+    if not settings.is_vercel_runtime and settings.environment in {"test", "development"}:
         return None
     raise ApiServiceError(
         503,
@@ -197,6 +198,106 @@ async def _reconcile_subscription_record(
     return plan_spec.name
 
 
+def _resolve_pack_from_cashfree(verification: OrderVerificationResult) -> PackSpec | None:
+    tags = verification.order_tags or {}
+    tag_item = str(tags.get("item_name") or "").strip()
+    if tag_item and tag_item in PACK_CATALOG:
+        return PACK_CATALOG[tag_item]
+
+    if verification.amount_paise and verification.currency.upper() == "INR":
+        matches = [
+            spec
+            for spec in PACK_CATALOG.values()
+            if spec.price_paise == verification.amount_paise
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _order_belongs_to_user(
+    *,
+    verification: OrderVerificationResult,
+    user_id: str,
+    user_email: str | None,
+) -> bool:
+    tags = verification.order_tags or {}
+    tag_user_id = str(tags.get("user_id") or "").strip()
+    if tag_user_id:
+        return tag_user_id == user_id
+
+    cf_email = (verification.customer_email or "").strip().lower()
+    auth_email = (user_email or "").strip().lower()
+    return bool(cf_email and auth_email and cf_email == auth_email)
+
+
+async def _reconcile_order_record(
+    *,
+    db: SupabaseServiceClient | None,
+    request: Request,
+    adapter: PaymentProviderAdapter,
+    user_id: str,
+    user_email: str | None,
+    order_id: str,
+    verification: OrderVerificationResult,
+) -> tuple[str, int, str]:
+    pack_spec = _resolve_pack_from_cashfree(verification)
+    if not pack_spec:
+        raise ApiServiceError(
+            409,
+            "UNRECOGNIZED_CREDIT_PACK",
+            "Cashfree order amount or tags do not match any active CleanData Studio credit package.",
+        )
+
+    if verification.currency and verification.currency.upper() != "INR":
+        raise ApiServiceError(
+            409,
+            "PAYMENT_CURRENCY_MISMATCH",
+            "Cashfree order currency did not match INR.",
+        )
+
+    if verification.amount_paise > 0 and verification.amount_paise != pack_spec.price_paise:
+        raise ApiServiceError(
+            409,
+            "PAYMENT_AMOUNT_MISMATCH",
+            "Cashfree order amount did not match our catalog credit package price.",
+        )
+
+    if db is not None:
+        await db.ensure_user_billing_profile(user_id, user_email)
+        row = await db.get_catalog_package(pack_spec.name)
+        if not row:
+            raise ApiServiceError(
+                503,
+                "CATALOG_PACKAGE_MISSING",
+                f"Credit package '{pack_spec.name}' is not seeded in the database.",
+            )
+        package_id = str(row["id"])
+        await db.create_pending_payment(
+            user_id=user_id,
+            amount_paise=pack_spec.price_paise,
+            currency="INR",
+            provider=adapter.provider_name,
+            provider_payment_id=order_id,
+            provider_order_id=order_id,
+            kind="credit_pack",
+            package_id=package_id,
+            plan_id=None,
+        )
+    else:
+        request.app.state.credits.create_pending_payment(
+            user_id=user_id,
+            amount_paise=pack_spec.price_paise,
+            currency="INR",
+            provider=adapter.provider_name,
+            provider_payment_id=order_id,
+            kind="credit_pack",
+            item_name=pack_spec.name,
+        )
+
+    return pack_spec.name, pack_spec.price_paise, pack_spec.currency
+
+
 async def _cancel_superseded_cashfree_subscriptions(
     *,
     db: SupabaseServiceClient | None,
@@ -218,7 +319,7 @@ async def _cancel_superseded_cashfree_subscriptions(
         if not old_id or old.get("provider") not in {"cashfree", "test_hmac"}:
             continue
         try:
-            await adapter.cancel_subscription(str(old_id))
+            await adapter.cancel_subscription(str(old_id), request_id=request_id)
         except Exception:
             log_event(
                 "cashfree_old_subscription_cancel_warning",
@@ -299,6 +400,7 @@ async def create_checkout(
             amount_paise=amount_paise,
             currency=currency,
             receipt_id=receipt_id,
+            request_id=request_id,
         )
 
         if db is not None:
@@ -394,6 +496,7 @@ async def create_checkout(
         amount_paise=amount_paise,
         currency=currency,
         receipt_id=receipt_id,
+        request_id=request_id,
     )
     sub_id = session.subscription_id or session.order_id
 
@@ -493,22 +596,62 @@ async def verify_checkout(
 
         if db is not None:
             owned = await db.get_payment_for_user(user.user_id, order_id)
+            owner_any = user.user_id if owned else await db.get_order_owner_any_user(order_id)
         else:
             owned = request.app.state.credits.get_payment_for_user(user.user_id, order_id)
+            owner_any = (
+                user.user_id
+                if owned
+                else request.app.state.credits.get_order_owner_any_user(order_id)
+            )
 
-        if not owned or owned.get("kind") != "credit_pack":
+        if owner_any and owner_any != user.user_id:
             raise ApiServiceError(404, "ORDER_NOT_FOUND", "Payment order not found for your account.")
 
-        item_name = (
-            owned.get("item_name")
-            or (owned.get("credit_packages") or {}).get("name")
-            or None
-        )
+        verification = await adapter.fetch_order_status(order_id, request_id=request_id)
 
-        verification = await adapter.fetch_order_status(order_id)
-        if verification.order_status == "PAID":
+        if not owned:
+            if not _order_belongs_to_user(
+                verification=verification,
+                user_id=user.user_id,
+                user_email=user.email,
+            ):
+                raise ApiServiceError(
+                    404, "ORDER_NOT_FOUND", "Payment order not found for your account."
+                )
+            item_name, expected_paise, expected_currency = await _reconcile_order_record(
+                db=db,
+                request=request,
+                adapter=adapter,
+                user_id=user.user_id,
+                user_email=user.email,
+                order_id=order_id,
+                verification=verification,
+            )
+            owned_status = "pending"
+            log_event(
+                "order_record_reconciled",
+                request_id,
+                user_id=user.user_id,
+                order_id=order_id,
+                item_name=item_name,
+            )
+        else:
+            if owned.get("kind") != "credit_pack":
+                raise ApiServiceError(
+                    404, "ORDER_NOT_FOUND", "Payment order not found for your account."
+                )
+            item_name = (
+                owned.get("item_name")
+                or (owned.get("credit_packages") or {}).get("name")
+                or None
+            )
             expected_paise = int(owned["amount"] if db is not None else owned["amount_paise"])
-            if verification.amount_paise != expected_paise or verification.currency != str(owned["currency"]).upper():
+            expected_currency = str(owned["currency"]).upper()
+            owned_status = str(owned.get("status") or "pending")
+
+        if verification.order_status == "PAID":
+            if verification.amount_paise != expected_paise or verification.currency != expected_currency:
                 raise ApiServiceError(
                     409,
                     "PAYMENT_AMOUNT_MISMATCH",
@@ -523,7 +666,7 @@ async def verify_checkout(
                 "currency": verification.currency,
             }
             if db is not None:
-                await db.rpc(
+                rpc_result = await db.rpc(
                     "process_payment_event",
                     {
                         "p_provider": adapter.provider_name,
@@ -533,16 +676,41 @@ async def verify_checkout(
                         "p_payload_meta": meta,
                     },
                 )
-                summary = await db.get_billing_summary(user.user_id)
             else:
-                request.app.state.credits.process_payment_event(
+                rpc_result = request.app.state.credits.process_payment_event(
                     provider=adapter.provider_name,
                     event_id=event_id,
                     provider_payment_id=order_id,
                     status="paid",
                     payload_meta=meta,
                 )
-                summary = request.app.state.credits.get_summary(user.user_id)
+
+            rpc_status = rpc_result.get("status") if isinstance(rpc_result, dict) else None
+            if rpc_status in {"amount_mismatch", "currency_mismatch"}:
+                raise ApiServiceError(
+                    409,
+                    "PAYMENT_AMOUNT_MISMATCH",
+                    "Cashfree order amount or currency did not match our catalog record.",
+                )
+            if rpc_status == "payment_not_found":
+                raise ApiServiceError(
+                    503,
+                    "BILLING_RECONCILIATION_FAILED",
+                    "Unable to reconcile verified Cashfree payment with database.",
+                )
+
+            summary = (
+                await db.get_billing_summary(user.user_id)
+                if db is not None
+                else request.app.state.credits.get_summary(user.user_id)
+            )
+            log_event(
+                "billing_order_verified",
+                request_id,
+                user_id=user.user_id,
+                order_id=order_id,
+                rpc_status=rpc_status,
+            )
 
             return CheckoutVerifyResponse(
                 kind="credit_pack",
@@ -592,13 +760,13 @@ async def verify_checkout(
         )
         return CheckoutVerifyResponse(
             kind="credit_pack",
-            status="paid" if owned.get("status") == "paid" else "pending",
+            status="paid" if owned_status == "paid" else "pending",
             item_name=item_name,
             wallet=summary.wallet,
             subscription=summary.subscription,
             message=(
                 "Payment confirmed."
-                if owned.get("status") == "paid"
+                if owned_status == "paid"
                 else "Payment is still pending confirmation from Cashfree. Credits will activate once settled."
             ),
         )
@@ -636,7 +804,7 @@ async def verify_checkout(
             "This subscription belongs to a different CleanData Studio account.",
         )
 
-    verification = await adapter.fetch_subscription_status(sub_id)
+    verification = await adapter.fetch_subscription_status(sub_id, request_id=request_id)
 
     # Reconcile missing local subscription/payment rows ONLY if Cashfree ownership is proven
     if not owned_sub:
@@ -695,7 +863,7 @@ async def verify_checkout(
         )
         event_id = f"verify:sub:{sub_id}:active"
         if db is not None:
-            await db.rpc(
+            rpc_result = await db.rpc(
                 "process_subscription_event",
                 {
                     "p_provider": adapter.provider_name,
@@ -713,9 +881,8 @@ async def verify_checkout(
                     },
                 },
             )
-            summary = await db.get_billing_summary(user.user_id)
         else:
-            request.app.state.credits.process_subscription_event(
+            rpc_result = request.app.state.credits.process_subscription_event(
                 provider=adapter.provider_name,
                 event_id=event_id,
                 subscription_id=sub_id,
@@ -724,7 +891,34 @@ async def verify_checkout(
                 amount_paise=verification.amount_paise,
                 currency=verification.currency,
             )
-            summary = request.app.state.credits.get_summary(user.user_id)
+
+        rpc_status = rpc_result.get("status") if isinstance(rpc_result, dict) else None
+        if rpc_status in {"amount_mismatch", "currency_mismatch"}:
+            raise ApiServiceError(
+                409,
+                "PAYMENT_AMOUNT_MISMATCH",
+                "Cashfree subscription amount or currency did not match our catalog record.",
+            )
+        if rpc_status in {"subscription_not_found", "plan_not_found"}:
+            raise ApiServiceError(
+                503,
+                "BILLING_RECONCILIATION_FAILED",
+                "Unable to reconcile verified Cashfree subscription with database.",
+            )
+
+        summary = (
+            await db.get_billing_summary(user.user_id)
+            if db is not None
+            else request.app.state.credits.get_summary(user.user_id)
+        )
+        log_event(
+            "billing_subscription_verified",
+            request_id,
+            user_id=user.user_id,
+            subscription_id=sub_id,
+            rpc_status=rpc_status,
+            credited=rpc_result.get("credited") if isinstance(rpc_result, dict) else None,
+        )
 
         return CheckoutVerifyResponse(
             kind="subscription",
@@ -816,7 +1010,7 @@ async def cancel_active_subscription(request: Request) -> SubscriptionCancelResp
                 "No active paid subscription found on your account.",
             )
 
-    await adapter.cancel_subscription(sub_id)
+    await adapter.cancel_subscription(sub_id, request_id=request_id)
     event_id = f"user_cancel:{sub_id}:{uuid.uuid4().hex[:8]}"
 
     if db is not None:
@@ -873,7 +1067,16 @@ async def handle_payment_webhook(request: Request) -> dict:
     )
 
     if not adapter.verify_webhook_signature(raw_body, signature, timestamp):
-        log_event("webhook_signature_rejected", request_id, provider=adapter.provider_name)
+        settings = request.app.state.settings
+        log_event(
+            "webhook_signature_rejected",
+            request_id,
+            provider=adapter.provider_name,
+            has_signature=bool(signature),
+            has_timestamp=bool(timestamp),
+            cashfree_env=settings.resolved_cashfree_env,
+            webhook_secret_source=settings.webhook_secret_source,
+        )
         raise ApiServiceError(
             401,
             "INVALID_WEBHOOK_SIGNATURE",
@@ -923,7 +1126,9 @@ async def handle_payment_webhook(request: Request) -> dict:
             # Secure webhook reconciliation if pending DB records were lost before Cashfree delivered the event
             if isinstance(result, dict) and result.get("status") == "subscription_not_found":
                 try:
-                    cf_sub = await adapter.fetch_subscription_status(parsed.subscription_id)
+                    cf_sub = await adapter.fetch_subscription_status(
+                        parsed.subscription_id, request_id=request_id
+                    )
                     tags = cf_sub.subscription_tags or {}
                     resolved_uid = str(tags.get("user_id") or "").strip() or None
                     if not resolved_uid and db is not None and cf_sub.customer_email:
@@ -981,7 +1186,7 @@ async def handle_payment_webhook(request: Request) -> dict:
             if isinstance(result, dict):
                 for old_sub_id in result.get("superseded_subscription_ids") or []:
                     try:
-                        await adapter.cancel_subscription(str(old_sub_id))
+                        await adapter.cancel_subscription(str(old_sub_id), request_id=request_id)
                     except Exception:
                         log_event(
                             "cashfree_old_subscription_cancel_warning",
@@ -991,25 +1196,79 @@ async def handle_payment_webhook(request: Request) -> dict:
     elif parsed.domain == "order":
         if not parsed.provider_payment_id:
             result = {"status": "ignored", "reason": "missing_order_id"}
-        elif db is not None:
-            result = await db.rpc(
-                "process_payment_event",
-                {
-                    "p_provider": adapter.provider_name,
-                    "p_event_id": parsed.event_id,
-                    "p_provider_payment_id": parsed.provider_payment_id,
-                    "p_status": parsed.status,
-                    "p_payload_meta": parsed.payload_meta,
-                },
-            )
         else:
-            result = request.app.state.credits.process_payment_event(
-                provider=adapter.provider_name,
-                event_id=parsed.event_id,
-                provider_payment_id=parsed.provider_payment_id,
-                status=parsed.status,
-                payload_meta=parsed.payload_meta,
-            )
+            if db is not None:
+                result = await db.rpc(
+                    "process_payment_event",
+                    {
+                        "p_provider": adapter.provider_name,
+                        "p_event_id": parsed.event_id,
+                        "p_provider_payment_id": parsed.provider_payment_id,
+                        "p_status": parsed.status,
+                        "p_payload_meta": parsed.payload_meta,
+                    },
+                )
+            else:
+                result = request.app.state.credits.process_payment_event(
+                    provider=adapter.provider_name,
+                    event_id=parsed.event_id,
+                    provider_payment_id=parsed.provider_payment_id,
+                    status=parsed.status,
+                    payload_meta=parsed.payload_meta,
+                )
+
+            # Secure order webhook reconciliation if pending DB payment record was missing
+            if isinstance(result, dict) and result.get("status") == "payment_not_found":
+                try:
+                    cf_order = await adapter.fetch_order_status(
+                        parsed.provider_payment_id, request_id=request_id
+                    )
+                    tags = cf_order.order_tags or {}
+                    resolved_uid = str(tags.get("user_id") or "").strip() or None
+                    if not resolved_uid and db is not None and cf_order.customer_email:
+                        resolved_uid = await db.find_user_id_by_email(cf_order.customer_email)
+
+                    if resolved_uid:
+                        await _reconcile_order_record(
+                            db=db,
+                            request=request,
+                            adapter=adapter,
+                            user_id=resolved_uid,
+                            user_email=cf_order.customer_email,
+                            order_id=parsed.provider_payment_id,
+                            verification=cf_order,
+                        )
+                        if db is not None:
+                            result = await db.rpc(
+                                "process_payment_event",
+                                {
+                                    "p_provider": adapter.provider_name,
+                                    "p_event_id": parsed.event_id,
+                                    "p_provider_payment_id": parsed.provider_payment_id,
+                                    "p_status": parsed.status,
+                                    "p_payload_meta": parsed.payload_meta,
+                                },
+                            )
+                        else:
+                            result = request.app.state.credits.process_payment_event(
+                                provider=adapter.provider_name,
+                                event_id=parsed.event_id,
+                                provider_payment_id=parsed.provider_payment_id,
+                                status=parsed.status,
+                                payload_meta=parsed.payload_meta,
+                            )
+                except ApiServiceError:
+                    log_event(
+                        "webhook_order_reconcile_rejected",
+                        request_id,
+                        order_id=parsed.provider_payment_id,
+                    )
+                except Exception:
+                    log_event(
+                        "webhook_order_reconcile_error",
+                        request_id,
+                        order_id=parsed.provider_payment_id,
+                    )
     else:
         result = {"status": "ignored", "event": parsed.event_type}
 

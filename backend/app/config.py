@@ -57,6 +57,20 @@ class Settings(BaseSettings):
         return (self.cashfree_secret_key or os.getenv("CASHFREE_SECRET_KEY", "")).strip()
 
     @property
+    def is_vercel_runtime(self) -> bool:
+        return bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
+
+    @property
+    def webhook_secret_source(self) -> str:
+        if (self.cashfree_webhook_secret or os.getenv("CASHFREE_WEBHOOK_SECRET", "")).strip():
+            return "cashfree_webhook_secret"
+        if self.resolved_cashfree_secret_key:
+            return "cashfree_secret_key_fallback"
+        if (self.payment_webhook_secret or os.getenv("PAYMENT_WEBHOOK_SECRET", "")).strip():
+            return "payment_webhook_secret_fallback"
+        return "missing"
+
+    @property
     def resolved_cashfree_webhook_secret(self) -> str:
         raw = (
             self.cashfree_webhook_secret
@@ -74,8 +88,25 @@ class Settings(BaseSettings):
 
     @property
     def resolved_frontend_origin(self) -> str:
-        first = next((o.strip().rstrip("/") for o in self.allowed_origin.split(",") if o.strip()), "")
-        return first or "https://cleandata-studio.vercel.app"
+        origins = [o.strip().rstrip("/") for o in self.allowed_origin.split(",") if o.strip()]
+        non_local = next(
+            (o for o in origins if not o.startswith(("http://localhost", "http://127.0.0.1"))),
+            "",
+        )
+        if non_local:
+            return non_local
+
+        vercel_env = (os.getenv("VERCEL_ENV") or "").strip().lower()
+        if self.environment == "production" or vercel_env == "production":
+            prod_host = (os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or "").strip().removeprefix("https://").removeprefix("http://")
+            return f"https://{prod_host}" if prod_host else "https://cleandata-studio.vercel.app"
+
+        if vercel_env == "preview":
+            preview_host = (os.getenv("VERCEL_URL") or "").strip().removeprefix("https://").removeprefix("http://")
+            if preview_host:
+                return f"https://{preview_host}"
+
+        return origins[0] if origins else "https://cleandata-studio.vercel.app"
 
     @property
     def resolved_supabase_url(self) -> str:
