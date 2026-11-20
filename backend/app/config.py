@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     allowed_origin: str = "http://localhost:3000"
+    frontend_url: str = ""
 
     api_key_pepper: str = "dev-only-pepper-change-in-prod"
     download_signing_secret: str = "dev-only-signing-secret-change-in-prod"
@@ -74,8 +75,17 @@ class Settings(BaseSettings):
 
     @property
     def resolved_frontend_origin(self) -> str:
-        first = next((o.strip().rstrip("/") for o in self.allowed_origin.split(",") if o.strip()), "")
-        return first or "https://cleandata-studio.vercel.app"
+        # CORS origins are not payment return URLs. Prefer an explicit public
+        # frontend URL, then Vercel's deployment hostname, never localhost.
+        explicit = (self.frontend_url or os.getenv("FRONTEND_URL", "")).strip().rstrip("/")
+        if explicit:
+            return explicit
+        deployment_host = os.getenv("VERCEL_URL", "").strip()
+        if deployment_host:
+            if not deployment_host.startswith(("http://", "https://")):
+                deployment_host = f"https://{deployment_host}"
+            return deployment_host.rstrip("/")
+        return "https://cleandata-studio.vercel.app"
 
     @property
     def resolved_supabase_url(self) -> str:
