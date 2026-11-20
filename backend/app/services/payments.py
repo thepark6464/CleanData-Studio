@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.utils.security import ApiServiceError
+from app.utils.security import ApiServiceError, log_event
 
 
 def _sanitize_phone(raw_phone: str | None) -> str:
@@ -175,6 +175,29 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             "x-client-secret": self.secret_key,
         }
 
+    @staticmethod
+    def _log_provider_error(operation: str, resp: httpx.Response, reference_id: str) -> None:
+        """Log only non-sensitive Cashfree error metadata; never log request/response bodies or credentials."""
+        provider_code = None
+        try:
+            body = resp.json()
+            if isinstance(body, dict):
+                provider_code = (
+                    body.get("code")
+                    or body.get("error_code")
+                    or body.get("type")
+                )
+        except (ValueError, TypeError):
+            pass
+
+        log_event(
+            "cashfree_api_error",
+            reference_id,
+            operation=operation,
+            http_status=resp.status_code,
+            provider_code=str(provider_code)[:120] if provider_code else None,
+        )
+
     async def create_order(
         self,
         *,
@@ -220,6 +243,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 json=payload,
             )
             if resp.status_code >= 400:
+                self._log_provider_error("create_payment_order", resp, order_id)
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
@@ -260,6 +284,13 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         )
         if existing.status_code == 200:
             return plan_id
+        if existing.status_code not in (404,):
+            self._log_provider_error("lookup_subscription_plan", existing, plan_id)
+            raise ApiServiceError(
+                502,
+                "PAYMENT_GATEWAY_ERROR",
+                "Cashfree rejected the subscription plan lookup. Check the Cashfree API credentials and environment.",
+            )
 
         amount_rupees = round(amount_paise / 100.0, 2)
         create_resp = await client.post(
@@ -280,6 +311,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
         if create_resp.status_code in (200, 201, 409):
             return plan_id
 
+        self._log_provider_error("create_subscription_plan", create_resp, plan_id)
         raise ApiServiceError(
             502,
             "PAYMENT_GATEWAY_ERROR",
@@ -348,6 +380,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                 json=payload,
             )
             if resp.status_code >= 400:
+                self._log_provider_error("create_subscription", resp, subscription_id)
                 raise ApiServiceError(
                     502,
                     "PAYMENT_GATEWAY_ERROR",
