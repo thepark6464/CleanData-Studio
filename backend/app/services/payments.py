@@ -278,7 +278,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
             "order_currency": currency,
             "customer_details": customer_details,
             "order_meta": {
-                "return_url": f"{self.frontend_origin}/dashboard/billing?kind=credit_pack&order_id={{order_id}}",
+                "return_url": f"{self.frontend_origin}/api/v1/billing/return?kind=credit_pack&order_id={{order_id}}",
             },
             "order_note": f"CleanData Studio Credit Pack: {item_name}",
             "order_tags": {
@@ -443,7 +443,7 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
                     "payment_methods": ["upi", "card", "enach"],
                 },
                 "subscription_meta": {
-                    "return_url": f"{self.frontend_origin}/dashboard/billing?kind=subscription&subscription_id={{subscription_id}}",
+                    "return_url": f"{self.frontend_origin}/api/v1/billing/return?kind=subscription&subscription_id={subscription_id}",
                 },
                 "subscription_expiry_time": expiry_iso,
                 "subscription_note": f"CleanData {plan_name} monthly subscription",
@@ -722,16 +722,20 @@ class CashfreePaymentAdapter(PaymentProviderAdapter):
           signed_payload = x-webhook-timestamp + raw_body
           expected = base64(hmac_sha256(secret, signed_payload))
         """
-        if not self.webhook_secret or not signature_header or not timestamp_header:
+        ts = (timestamp_header or "").strip()
+        sig = (signature_header or "").strip()
+        if not self.webhook_secret or not sig or not ts:
             return False
-        signed_payload = timestamp_header.strip().encode("utf-8") + raw_body
+        if not re.fullmatch(r"\d{10,16}", ts):
+            return False
+        signed_payload = ts.encode("utf-8") + raw_body
         digest = hmac.new(
             self.webhook_secret.encode("utf-8"),
             signed_payload,
             hashlib.sha256,
         ).digest()
         expected_b64 = base64.b64encode(digest).decode("utf-8")
-        return hmac.compare_digest(expected_b64, signature_header.strip())
+        return hmac.compare_digest(expected_b64, sig)
 
     def parse_webhook_event(self, payload: dict[str, Any]) -> ParsedWebhookEvent:
         event_type = str(
@@ -1105,16 +1109,20 @@ class TestHmacPaymentAdapter(PaymentProviderAdapter):
     def verify_webhook_signature(
         self, raw_body: bytes, signature_header: str, timestamp_header: str = ""
     ) -> bool:
-        if not self.webhook_secret or not signature_header or not timestamp_header:
+        ts = (timestamp_header or "").strip()
+        sig = (signature_header or "").strip()
+        if not self.webhook_secret or not sig or not ts:
             return False
-        signed_payload = timestamp_header.strip().encode("utf-8") + raw_body
+        if not re.fullmatch(r"\d{10,16}", ts):
+            return False
+        signed_payload = ts.encode("utf-8") + raw_body
         digest = hmac.new(
             self.webhook_secret.encode("utf-8"),
             signed_payload,
             hashlib.sha256,
         ).digest()
         expected_b64 = base64.b64encode(digest).decode("utf-8")
-        return hmac.compare_digest(expected_b64, signature_header.strip())
+        return hmac.compare_digest(expected_b64, sig)
 
     def parse_webhook_event(self, payload: dict[str, Any]) -> ParsedWebhookEvent:
         # Delegate to CashfreePaymentAdapter parsing rules so unit tests validate Cashfree payloads directly

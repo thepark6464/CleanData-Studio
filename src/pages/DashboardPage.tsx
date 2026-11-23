@@ -17,6 +17,7 @@ import { formatInrFromPaise } from '../config/pricing';
 import { ApiUsageCard } from '../components/ApiUsageCard';
 import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api/client';
 import { useAuth, type CleaningJobRecord } from '../lib/auth/AuthContext';
+import { resolveBillingDisplayState } from '../lib/billing/displayState';
 import type { AppRoute } from '../lib/router';
 import { setIntendedRoute } from '../lib/router';
 
@@ -76,6 +77,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
     profile,
     wallet,
     activePlan,
+    transactions,
+    payments,
+    billingError,
+    billingErrorDetail,
+    billingStatus,
     jobs,
     isDataLoading,
     signOut,
@@ -187,7 +193,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
   const subBalance = wallet?.subscription_balance ?? 0;
   const purBalance = wallet?.purchased_balance ?? 0;
-  const totalCredits = subBalance + purBalance;
+  const billingDisplay = resolveBillingDisplayState({
+    billingStatus,
+    isDataLoading,
+    billingError,
+    billingErrorDetail,
+    activePlan,
+    wallet,
+    transactions,
+    payments,
+  });
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-8 sm:px-6 sm:py-10">
@@ -282,27 +297,72 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         </div>
       )}
 
+      {billingDisplay.isSyncUnavailable && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">{billingDisplay.errorTitle}</p>
+              <p className="text-amber-900">{billingDisplay.errorMessage}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void refreshAccountData()}
+              disabled={isDataLoading}
+              className="rounded-md border border-amber-400 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100 cursor-pointer disabled:opacity-50"
+            >
+              {isDataLoading ? 'Retrying...' : 'Retry'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('/dashboard/billing')}
+              className="rounded-md border border-amber-400 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100 cursor-pointer"
+            >
+              Open Billing
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Overview Stats (3 cards, flat single border, tabular numerals) */}
       <section aria-label="Account summary" className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
-          <p className="text-xs font-medium text-slate-500">Current Plan</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500">Current Plan</p>
+            {billingDisplay.isSyncUnavailable && (
+              <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium ${billingDisplay.badgeTone}`}>
+                {billingDisplay.badgeLabel}
+              </span>
+            )}
+          </div>
           <p className="font-display text-2xl font-bold text-slate-950">
-            {activePlan?.name ?? 'Free'}
+            {billingDisplay.planDisplayName}
           </p>
           <p className="font-mono text-xs text-slate-600 tabular-nums">
-            {formatInrFromPaise(activePlan?.monthly_price ?? 0)}/mo · Max{' '}
-            {activePlan?.max_file_size_mb ?? 5} MB ·{' '}
-            {activePlan?.api_access ? 'API enabled' : 'Studio only'}
+            {billingDisplay.phase === 'loaded'
+              ? `${formatInrFromPaise(activePlan?.monthly_price ?? 0)}/mo · Max ${activePlan?.max_file_size_mb ?? 5} MB · ${activePlan?.api_access ? 'API enabled' : 'Studio only'}`
+              : billingDisplay.phase === 'loading'
+              ? 'Loading plan entitlements...'
+              : 'Live plan status temporarily unavailable'}
           </p>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
           <p className="text-xs font-medium text-slate-500">Available Credits</p>
           <p className="font-mono text-2xl font-bold text-slate-950 tabular-nums">
-            {totalCredits}
+            {billingDisplay.totalCreditsText}
           </p>
           <p className="font-mono text-xs text-slate-600 tabular-nums">
-            Subscription: {subBalance} · Purchased: {purBalance} (1 credit = up to 1,000 rows)
+            {billingDisplay.phase === 'loaded'
+              ? `Subscription: ${subBalance} · Purchased: ${purBalance} (1 credit = up to 1,000 rows)`
+              : billingDisplay.phase === 'loading'
+              ? 'Loading credit wallet...'
+              : 'Live credit wallet sync unavailable'}
           </p>
         </div>
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CREDIT_PACKS, SUBSCRIPTION_PLANS } from '../config/pricing';
 import { CleanDataApiClient, CleanDataApiError } from '../lib/api/client';
+import { resolveBillingDisplayState } from '../lib/billing/displayState';
 
 describe('Pricing catalog & Cashfree billing API client', () => {
   afterEach(() => {
@@ -219,4 +220,151 @@ describe('Pricing catalog & Cashfree billing API client', () => {
       requestId: 'req_123',
     });
   });
+
+  it('preserves structured 503/500 envelopes and x-request-id header fallback on non-JSON 500s', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        headers: new Headers({ 'x-request-id': 'req_hdr_503' }),
+        json: async () => ({
+          success: false,
+          error: {
+            code: 'BILLING_MIGRATION_MISSING',
+            message: 'Billing database tables or RPC functions are missing or outdated.',
+            request_id: 'req_env_503',
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        headers: new Headers({ 'x-request-id': 'req_hdr_500' }),
+        json: async () => {
+          throw new SyntaxError('Unexpected token A in JSON');
+        },
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new CleanDataApiClient('/api', 'supabase-jwt-token');
+
+    await expect(client.getBillingSummary()).rejects.toMatchObject({
+      name: 'CleanDataApiError',
+      status: 503,
+      code: 'BILLING_MIGRATION_MISSING',
+      requestId: 'req_env_503',
+    });
+
+    await expect(client.getBillingSummary()).rejects.toMatchObject({
+      name: 'CleanDataApiError',
+      status: 500,
+      code: 'HTTP_500',
+      message: 'Server returned HTTP 500.',
+      requestId: 'req_hdr_500',
+    });
+  });
+
+  it('distinguishes billing sync error from confirmed Free Tier and supports retry recovery', () => {
+    const errorState = resolveBillingDisplayState({
+      billingStatus: 'error',
+      isDataLoading: false,
+      billingError: 'Server returned HTTP 500.',
+      billingErrorDetail: {
+        code: 'HTTP_500',
+        message: 'Server returned HTTP 500.',
+        status: 500,
+        requestId: 'req_500',
+      },
+      activePlan: null,
+      wallet: null,
+      transactions: [],
+      payments: [],
+    });
+
+    expect(errorState.phase).toBe('error');
+    expect(errorState.isSyncUnavailable).toBe(true);
+    expect(errorState.badgeLabel).toBe('Sync unavailable');
+    expect(errorState.planDisplayName).toBe('Temporarily unavailable');
+    expect(errorState.subscriptionCreditsText).toBe('—');
+    expect(errorState.purchasedCreditsText).toBe('—');
+    expect(errorState.totalCreditsText).toBe('—');
+    expect(errorState.errorCode).toBe('HTTP_500');
+    expect(errorState.errorRequestId).toBe('req_500');
+    expect(errorState.paymentsEmptyMessage).toContain('temporarily unavailable');
+
+    const freeTierState = resolveBillingDisplayState({
+      billingStatus: 'loaded',
+      isDataLoading: false,
+      billingError: null,
+      billingErrorDetail: null,
+      activePlan: {
+        name: 'Free',
+        monthly_price: 0,
+        monthly_credits: 0,
+        max_file_size_mb: 5,
+        daily_job_limit: 3,
+        api_access: false,
+        api_rate_limit_per_min: 0,
+        status: 'free',
+        current_period_end: null,
+      },
+      wallet: {
+        user_id: 'u1',
+        subscription_balance: 0,
+        purchased_balance: 0,
+        subscription_expires_at: null,
+        purchased_expires_at: null,
+        updated_at: '2026-06-01T00:00:00Z',
+      },
+      transactions: [],
+      payments: [],
+    });
+
+    expect(freeTierState.phase).toBe('loaded');
+    expect(freeTierState.isSyncUnavailable).toBe(false);
+    expect(freeTierState.badgeLabel).toBe('Free Tier');
+    expect(freeTierState.planDisplayName).toBe('Free');
+    expect(freeTierState.subscriptionCreditsText).toBe('0');
+    expect(freeTierState.purchasedCreditsText).toBe('0');
+    expect(freeTierState.paymentsEmptyMessage).toBe('No Cashfree payment sessions created yet.');
+
+    const recoveredProState = resolveBillingDisplayState({
+      billingStatus: 'loaded',
+      isDataLoading: false,
+      billingError: null,
+      billingErrorDetail: null,
+      activePlan: {
+        name: 'Pro',
+        monthly_price: 79900,
+        monthly_credits: 500,
+        max_file_size_mb: 100,
+        daily_job_limit: null,
+        api_access: true,
+        api_rate_limit_per_min: 60,
+        status: 'active',
+        provider: 'cashfree',
+        provider_subscription_id: 'cd_sub_1',
+        current_period_end: '2026-07-01T00:00:00Z',
+      },
+      wallet: {
+        user_id: 'u1',
+        subscription_balance: 500,
+        purchased_balance: 50,
+        subscription_expires_at: '2026-07-01T00:00:00Z',
+        purchased_expires_at: '2027-06-01T00:00:00Z',
+        updated_at: '2026-06-01T00:00:00Z',
+      },
+      transactions: [],
+      payments: [],
+    });
+
+    expect(recoveredProState.phase).toBe('loaded');
+    expect(recoveredProState.badgeLabel).toBe('Subscription active');
+    expect(recoveredProState.planDisplayName).toBe('Pro');
+    expect(recoveredProState.subscriptionCreditsText).toBe('500');
+    expect(recoveredProState.purchasedCreditsText).toBe('50');
+    expect(recoveredProState.totalCreditsText).toBe('550');
+  });
 });
+

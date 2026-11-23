@@ -1218,14 +1218,14 @@ def test_billing_summary_handles_nullable_and_legacy_db_rows():
 
 def test_unhandled_exception_returns_structured_json_500():
     uid = "user-500-test"
-    token = _make_hs256_token(uid, "err@example.com")
+    token = _make_jwt(uid, "err@example.com")
     headers = {"Authorization": f"Bearer {token}"}
     app = create_app(
         Settings(
             environment="test",
-            supabase_jwt_secret=TEST_SECRET,
+            supabase_jwt_secret=TEST_JWT_SECRET,
             payment_provider="test_hmac",
-            cashfree_webhook_secret=WEBHOOK_SECRET,
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
         )
     )
 
@@ -1242,4 +1242,577 @@ def test_unhandled_exception_returns_structured_json_500():
     assert body["success"] is False
     assert body["error"]["code"] == "INTERNAL_SERVER_ERROR"
     assert "RuntimeError" in body["error"]["message"]
+
+
+def test_billing_summary_new_user_empty_supabase_returns_free_tier():
+    uid = "user-new-free-1"
+    token = _make_jwt(uid, "newfree@example.com")
+    app = create_app(
+        Settings(
+            environment="production",
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="service_role_secret_never_logged",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+
+    class _EmptyResp:
+        status_code = 200
+        content = b"[]"
+
+        def json(self):
+            return []
+
+    class _FakeEmptyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _EmptyResp()
+
+    with TestClient(app) as tc:
+        with patch("app.database.httpx.AsyncClient", _FakeEmptyClient):
+            resp = tc.get("/api/v1/billing/summary", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["subscription"]["plan_name"] == "Free"
+    assert body["subscription"]["status"] == "free"
+    assert body["wallet"]["subscription_balance"] == 0
+    assert body["wallet"]["purchased_balance"] == 0
+    assert body["wallet"]["total_balance"] == 0
+    assert body["transactions"] == []
+    assert body["payments"] == []
+
+
+def test_billing_summary_clamps_expired_wallet_credits_lazily():
+    import asyncio
+    from app.database import SupabaseServiceClient
+
+    cfg = Settings(
+        supabase_url="https://example.supabase.co",
+        supabase_service_role_key="service_role_test",
+    )
+    db = SupabaseServiceClient(cfg)
+    past_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat()
+    rpc_calls: list[str] = []
+
+    class _FakeResp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+            self.content = json.dumps(payload).encode("utf-8")
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            if url.endswith("/credit_wallets"):
+                return _FakeResp(
+                    200,
+                    [
+                        {
+                            "subscription_balance": 500,
+                            "purchased_balance": 150,
+                            "subscription_expires_at": past_iso,
+                            "purchased_expires_at": past_iso,
+                        }
+                    ],
+                )
+            return _FakeResp(200, [])
+
+        async def post(self, url, **kwargs):
+            if "/rpc/expire_credits" in url:
+                rpc_calls.append("expire_credits")
+                return _FakeResp(200, {"expired_subscriptions": 1})
+            return _FakeResp(200, {})
+
+    with patch("app.database.httpx.AsyncClient", _FakeClient):
+        summary = asyncio.run(db.get_billing_summary("user-expired-wallet"))
+
+    assert rpc_calls == ["expire_credits"]
+    assert summary.wallet.subscription_balance == 0
+    assert summary.wallet.purchased_balance == 0
+    assert summary.wallet.total_balance == 0
+
+
+def test_billing_summary_supabase_unavailable_returns_503_and_logs_metadata():
+    import httpx as real_httpx
+
+    uid = "user-db-down"
+    token = _make_jwt(uid, "down@example.com")
+    app = create_app(
+        Settings(
+            environment="production",
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="service_role_secret_never_logged",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+    logged_events: list[tuple[str, dict]] = []
+
+    class _DownClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            raise real_httpx.ConnectError("Connection refused to Supabase")
+
+    def _capture_log(event: str, request_id: str, **fields):
+        logged_events.append((event, {"request_id": request_id, **fields}))
+
+    with TestClient(app) as tc:
+        with patch("app.database.httpx.AsyncClient", _DownClient), patch(
+            "app.utils.security.log_event", side_effect=_capture_log
+        ):
+            resp = tc.get("/api/v1/billing/summary", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "BILLING_DATABASE_UNAVAILABLE"
+    assert body["error"]["request_id"]
+    db_err_logs = [f for name, f in logged_events if name == "billing_db_error"]
+    assert len(db_err_logs) == 1
+    assert db_err_logs[0]["endpoint"] == "/api/v1/billing/summary"
+    assert db_err_logs[0]["user_id"] == uid
+    assert db_err_logs[0]["operation"] == "select_credit_wallets"
+    assert db_err_logs[0]["db_error_code"] == "ConnectError"
+    assert "service_role_secret_never_logged" not in json.dumps(db_err_logs)
+
+
+def test_billing_summary_missing_migration_returns_503_migration_missing():
+    uid = "user-missing-mig"
+    token = _make_jwt(uid, "mig@example.com")
+    app = create_app(
+        Settings(
+            environment="production",
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="service_role_secret_never_logged",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+    logged_events: list[tuple[str, dict]] = []
+
+    class _MissingTableResp:
+        status_code = 404
+        content = b'{"code":"PGRST205","message":"Could not find the table \'public.credit_wallets\' in the schema cache"}'
+        text = content.decode("utf-8")
+
+        def json(self):
+            return json.loads(self.text)
+
+    class _MissingTableClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _MissingTableResp()
+
+    def _capture_log(event: str, request_id: str, **fields):
+        logged_events.append((event, {"request_id": request_id, **fields}))
+
+    with TestClient(app) as tc:
+        with patch("app.database.httpx.AsyncClient", _MissingTableClient), patch(
+            "app.utils.security.log_event", side_effect=_capture_log
+        ):
+            resp = tc.get("/api/v1/billing/summary", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"]["code"] == "BILLING_MIGRATION_MISSING"
+    db_err_logs = [f for name, f in logged_events if name == "billing_db_error"]
+    assert db_err_logs[0]["db_error_code"] == "PGRST205"
+    assert db_err_logs[0]["operation"] == "select_credit_wallets"
+
+
+def test_billing_summary_supabase_auth_rejected_returns_503_auth_error():
+    uid = "user-db-auth"
+    token = _make_jwt(uid, "dbauth@example.com")
+    app = create_app(
+        Settings(
+            environment="production",
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="bad_service_role_secret",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+
+    class _AuthErrResp:
+        status_code = 401
+        content = b'{"code":"401","message":"Invalid API key"}'
+        text = '{"code":"401","message":"Invalid API key"}'
+
+        def json(self):
+            return {"code": "401", "message": "Invalid API key"}
+
+    class _AuthErrClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _AuthErrResp()
+
+    with TestClient(app) as tc:
+        with patch("app.database.httpx.AsyncClient", _AuthErrClient):
+            resp = tc.get("/api/v1/billing/summary", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "BILLING_DATABASE_AUTH_ERROR"
+
+
+def test_billing_summary_invalid_token_returns_401():
+    app = create_app(
+        Settings(
+            environment="test",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+    with TestClient(app) as tc:
+        resp = tc.get(
+            "/api/v1/billing/summary",
+            headers={"Authorization": "Bearer not-a-valid-jwt"},
+        )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_TOKEN"
+
+
+def test_credits_endpoint_missing_migration_returns_503():
+    uid = "user-credits-mig"
+    token = _make_jwt(uid, "creditsmig@example.com")
+    app = create_app(
+        Settings(
+            environment="production",
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="service_role_secret",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+
+    class _MissingTableResp:
+        status_code = 400
+        content = b'{"code":"42P01","message":"relation \\"public.credit_wallets\\" does not exist"}'
+        text = content.decode("utf-8")
+
+        def json(self):
+            return json.loads(self.text)
+
+    class _MissingTableClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _MissingTableResp()
+
+    with TestClient(app) as tc:
+        with patch("app.database.httpx.AsyncClient", _MissingTableClient):
+            resp = tc.get("/api/v1/credits", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "BILLING_MIGRATION_MISSING"
+
+
+def test_cashfree_return_route_redirects_get_and_post_and_strips_placeholders(tmp_path):
+    app = create_app(
+        Settings(
+            environment="test",
+            storage_dir=str(tmp_path),
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+            frontend_url="https://cleandata-studio.vercel.app",
+        )
+    )
+    with TestClient(app) as tc:
+        get_resp = tc.get(
+            "/api/v1/billing/return?kind=credit_pack&order_id=cd_ord_123",
+            follow_redirects=False,
+        )
+        assert get_resp.status_code == 303
+        assert (
+            get_resp.headers["location"]
+            == "https://cleandata-studio.vercel.app/dashboard/billing?kind=credit_pack&order_id=cd_ord_123"
+        )
+
+        post_form_resp = tc.post(
+            "/api/v1/billing/return",
+            data={"kind": "subscription", "cf_subscriptionId": "cd_sub_form_999"},
+            follow_redirects=False,
+        )
+        assert post_form_resp.status_code == 303
+        assert (
+            post_form_resp.headers["location"]
+            == "https://cleandata-studio.vercel.app/dashboard/billing?kind=subscription&subscription_id=cd_sub_form_999"
+        )
+
+        post_json_resp = tc.post(
+            "/api/v1/billing/return",
+            json={"order_id": "{order_id}", "subscription_id": "cd_sub_json_777"},
+            follow_redirects=False,
+        )
+        assert post_json_resp.status_code == 303
+        assert (
+            post_json_resp.headers["location"]
+            == "https://cleandata-studio.vercel.app/dashboard/billing?kind=subscription&subscription_id=cd_sub_json_777"
+        )
+
+
+def test_cashfree_checkout_return_urls_target_backend_return_route():
+    import asyncio
+
+    captured: list[tuple[str, dict]] = []
+
+    class _FakeResp:
+        def __init__(self, status_code: int, body: dict):
+            self.status_code = status_code
+            self._body = body
+            self.content = json.dumps(body).encode("utf-8")
+            self.text = self.content.decode("utf-8")
+
+        def json(self):
+            return self._body
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            if "/plans/" in url:
+                return _FakeResp(200, {"plan_id": "cleandata_pro_monthly"})
+            return _FakeResp(404, {"message": "not found"})
+
+        async def post(self, url, **kwargs):
+            payload = kwargs.get("json") or {}
+            captured.append((url, payload))
+            if url.endswith("/orders"):
+                return _FakeResp(
+                    200,
+                    {
+                        "order_id": payload["order_id"],
+                        "order_amount": 149.0,
+                        "order_currency": "INR",
+                        "payment_session_id": "session_pg_test",
+                    },
+                )
+            return _FakeResp(
+                200,
+                {
+                    "subscription_id": payload["subscription_id"],
+                    "cf_subscription_id": "cf_sub_1",
+                    "subscription_session_id": "session_sub_test",
+                },
+            )
+
+    adapter = CashfreePaymentAdapter(
+        env="sandbox",
+        app_id="cf_app_test",
+        secret_key="cf_secret_test",
+        webhook_secret="cf_wh_test",
+        frontend_origin="https://cleandata-studio.vercel.app",
+    )
+
+    async def _run():
+        with patch("app.services.payments.httpx.AsyncClient", _FakeClient):
+            await adapter.create_order(
+                user_id="u-1",
+                user_email="u@example.com",
+                customer_phone="9876543210",
+                item_name="50 Credits",
+                amount_paise=14900,
+                currency="INR",
+                receipt_id="rcpt1",
+            )
+            await adapter.create_subscription(
+                user_id="u-1",
+                user_email="u@example.com",
+                customer_phone="9876543210",
+                plan_name="Pro",
+                amount_paise=79900,
+                currency="INR",
+                receipt_id="rcpt2",
+            )
+
+    asyncio.run(_run())
+    assert len(captured) == 2
+    order_url, order_payload = captured[0]
+    sub_url, sub_payload = captured[1]
+    assert order_url.endswith("/orders")
+    assert (
+        order_payload["order_meta"]["return_url"]
+        == "https://cleandata-studio.vercel.app/api/v1/billing/return?kind=credit_pack&order_id={order_id}"
+    )
+    assert sub_url.endswith("/subscriptions")
+    assert sub_payload["subscription_meta"]["return_url"] == (
+        "https://cleandata-studio.vercel.app/api/v1/billing/return?kind=subscription&subscription_id=cd_sub_rcpt2"
+    )
+    assert "{subscription_id}" not in sub_payload["subscription_meta"]["return_url"]
+
+
+def test_webhook_rejects_non_numeric_timestamp_header(tmp_path):
+    with _make_client(tmp_path) as tc:
+        raw_body = json.dumps({"type": "SUBSCRIPTION_STATUS_CHANGED", "data": {}}).encode("utf-8")
+        bad_ts_headers = _sign_cashfree_webhook(raw_body, timestamp="not-a-timestamp")
+        resp = tc.post("/api/v1/webhooks/payments", content=raw_body, headers=bad_ts_headers)
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "INVALID_WEBHOOK_SIGNATURE"
+
+        newline_ts_headers = _sign_cashfree_webhook(raw_body, timestamp="1718450000\n")
+        resp2 = tc.post("/api/v1/webhooks/payments", content=raw_body, headers=newline_ts_headers)
+        assert resp2.status_code == 401
+        assert resp2.json()["error"]["code"] == "INVALID_WEBHOOK_SIGNATURE"
+
+
+def test_subscription_cycle1_payment_dedup_and_month2_renewal(tmp_path):
+    app = create_app(
+        Settings(
+            environment="test",
+            storage_dir=str(tmp_path),
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+    store = app.state.credits
+    uid = "user-cycle1-dedup"
+    sub_id = "cd_sub_cycle1_test"
+    store.create_payment_record(
+        user_id=uid,
+        amount_paise=79900,
+        currency="INR",
+        provider="cashfree",
+        provider_payment_id=sub_id,
+        kind="subscription",
+        item_name="Pro",
+        status="pending",
+    )
+    store.register_subscription(
+        user_id=uid,
+        plan_name="Pro",
+        provider="cashfree",
+        provider_subscription_id=sub_id,
+    )
+
+    res1 = store.process_subscription_event(
+        provider="cashfree",
+        event_id="evt_sub_act_1",
+        subscription_id=sub_id,
+        event_kind="activated",
+        provider_payment_id=None,
+        amount_paise=79900,
+        currency="INR",
+    )
+    assert res1["credited"] is True
+
+    res2 = store.process_subscription_event(
+        provider="cashfree",
+        event_id="evt_sub_pay_1",
+        subscription_id=sub_id,
+        event_kind="renewal_paid",
+        provider_payment_id="cf_pay_cycle1",
+        amount_paise=79900,
+        currency="INR",
+    )
+    assert res2["credited"] is False
+
+    summary_cycle1 = store.get_summary(uid)
+    assert summary_cycle1["wallet"]["subscription_balance"] == 500
+    assert len(summary_cycle1["payments"]) == 1
+    assert summary_cycle1["payments"][0]["status"] == "paid"
+    assert summary_cycle1["payments"][0]["provider_payment_id"] == sub_id
+
+    # Simulate Month 2 billing cycle (> 12 hours after Cycle 1)
+    store.subscriptions[sub_id]["last_credited_at"] = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    res3 = store.process_subscription_event(
+        provider="cashfree",
+        event_id="evt_sub_pay_2",
+        subscription_id=sub_id,
+        event_kind="renewal_paid",
+        provider_payment_id="cf_pay_cycle2",
+        amount_paise=79900,
+        currency="INR",
+    )
+    assert res3["credited"] is True
+    summary_cycle2 = store.get_summary(uid)
+    assert len(summary_cycle2["payments"]) == 2
+
+
+def test_api_keys_route_maps_supabase_failure_to_503():
+    uid = "user-apikeys-db-err"
+    token = _make_jwt(uid, "apikeysdb@example.com")
+    app = create_app(
+        Settings(
+            environment="production",
+            supabase_url="https://example.supabase.co",
+            supabase_service_role_key="bad_service_role_secret",
+            supabase_jwt_secret=TEST_JWT_SECRET,
+            payment_provider="test_hmac",
+            cashfree_webhook_secret=TEST_WEBHOOK_SECRET,
+        )
+    )
+
+    class _AuthErrResp:
+        status_code = 401
+        content = b'{"code":"401","message":"Invalid API key"}'
+        text = '{"code":"401","message":"Invalid API key"}'
+
+        def json(self):
+            return {"code": "401", "message": "Invalid API key"}
+
+    class _AuthErrClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _AuthErrResp()
+
+    with TestClient(app) as tc:
+        with patch("app.database.httpx.AsyncClient", _AuthErrClient):
+            resp = tc.get("/api/v1/api-keys", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "BILLING_DATABASE_AUTH_ERROR"
 

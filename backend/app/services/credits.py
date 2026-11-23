@@ -596,14 +596,30 @@ class InMemoryCreditStore:
             if amount_paise is not None and amount_paise > 0 and amount_paise != plan.monthly_price_paise:
                 return {"status": "amount_mismatch"}
 
-            # Settle initial checkout row
-            init_pay_id = self.payment_by_provider_id.get(subscription_id)
-            if init_pay_id and self.payments[init_pay_id]["status"] == "pending":
-                self.payments[init_pay_id]["status"] = "paid"
-
-            # Add recurring charge ledger entry when distinct payment id arrives
-            if (
+            should_credit = False
+            last_at: dt.datetime | None = sub.get("last_credited_at")
+            if last_at is None:
+                should_credit = True
+            elif (
                 provider_payment_id
+                and sub.get("last_credited_payment_id") != provider_payment_id
+                and (now - last_at) > dt.timedelta(hours=12)
+            ):
+                should_credit = True
+
+            # Settle initial checkout row for Cycle 1 (attach provider_reference_id without duplicating payment row)
+            init_pay_id = self.payment_by_provider_id.get(subscription_id)
+            if init_pay_id:
+                if self.payments[init_pay_id]["status"] == "pending":
+                    self.payments[init_pay_id]["status"] = "paid"
+                if provider_payment_id and not self.payments[init_pay_id].get("provider_reference_id"):
+                    self.payments[init_pay_id]["provider_reference_id"] = provider_payment_id
+
+            # Add recurring charge ledger entry ONLY for Month 2+ renewals (when last_at was already set)
+            if (
+                should_credit
+                and last_at is not None
+                and provider_payment_id
                 and provider_payment_id != subscription_id
                 and provider_payment_id not in self.payment_by_provider_id
             ):
@@ -621,17 +637,6 @@ class InMemoryCreditStore:
                     "created_at": now.isoformat(),
                 }
                 self.payment_by_provider_id[provider_payment_id] = new_pay_id
-
-            should_credit = False
-            last_at: dt.datetime | None = sub.get("last_credited_at")
-            if last_at is None:
-                should_credit = True
-            elif (
-                provider_payment_id
-                and sub.get("last_credited_payment_id") != provider_payment_id
-                and (now - last_at) > dt.timedelta(hours=12)
-            ):
-                should_credit = True
 
             # Cancel any previous active subscription records for this user
             superseded_ids: list[str] = []
@@ -660,6 +665,8 @@ class InMemoryCreditStore:
                     provider_subscription_id=subscription_id,
                 )
             else:
+                if provider_payment_id and not sub.get("last_credited_payment_id"):
+                    sub["last_credited_payment_id"] = provider_payment_id
                 w.plan_name = plan.name
                 w.subscription_status = "active"
                 w.subscription_provider = provider

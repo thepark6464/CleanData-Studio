@@ -1,8 +1,10 @@
 import json
 import uuid
 from typing import Any
+from urllib.parse import parse_qs, urlencode
 import httpx
 from fastapi import APIRouter, Request
+from fastapi.responses import RedirectResponse
 
 from app.auth.jwt_auth import require_jwt_user
 from app.database import SupabaseOperationError, SupabaseServiceClient, map_billing_db_error
@@ -1193,6 +1195,75 @@ async def cancel_active_subscription(request: Request) -> SubscriptionCancelResp
         plan_name=plan_name,
         message=f"Your {plan_name} subscription mandate has been cancelled on Cashfree and will not renew.",
     )
+
+
+def _clean_cashfree_param(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or (text.startswith("{") and text.endswith("}")):
+        return None
+    return text
+
+
+@router.api_route("/billing/return", methods=["GET", "POST"])
+async def handle_cashfree_return(request: Request) -> RedirectResponse:
+    """
+    Receives Cashfree PG & Subscriptions return_url redirects (which Cashfree may
+    deliver as either GET query params or HTML Form POST body) and 303-redirects
+    to the Vite SPA /dashboard/billing page where authenticated verify runs.
+    """
+    settings = request.app.state.settings
+    qp = request.query_params
+    body_params: dict[str, Any] = {}
+
+    if request.method == "POST":
+        raw_body = await request.body()
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "application/json" in content_type and raw_body:
+            try:
+                parsed_json = json.loads(raw_body.decode("utf-8"))
+                if isinstance(parsed_json, dict):
+                    body_params = parsed_json
+            except Exception:
+                body_params = {}
+        elif raw_body:
+            try:
+                parsed_qs = parse_qs(raw_body.decode("utf-8"), keep_blank_values=False)
+                body_params = {k: v[0] for k, v in parsed_qs.items() if v}
+            except Exception:
+                body_params = {}
+
+    order_id = _clean_cashfree_param(
+        qp.get("order_id")
+        or qp.get("orderId")
+        or body_params.get("order_id")
+        or body_params.get("orderId")
+    )
+    subscription_id = _clean_cashfree_param(
+        qp.get("subscription_id")
+        or qp.get("sub_id")
+        or qp.get("cf_subscriptionId")
+        or body_params.get("subscription_id")
+        or body_params.get("sub_id")
+        or body_params.get("cf_subscriptionId")
+        or body_params.get("cf_subscription_id")
+    )
+    kind = _clean_cashfree_param(qp.get("kind") or body_params.get("kind"))
+    if not kind:
+        kind = "subscription" if subscription_id else ("credit_pack" if order_id else None)
+
+    out_params: dict[str, str] = {}
+    if kind:
+        out_params["kind"] = kind
+    if order_id:
+        out_params["order_id"] = order_id
+    if subscription_id:
+        out_params["subscription_id"] = subscription_id
+
+    frontend_base = settings.resolved_frontend_origin.rstrip("/")
+    query_str = f"?{urlencode(out_params)}" if out_params else ""
+    return RedirectResponse(url=f"{frontend_base}/dashboard/billing{query_str}", status_code=303)
 
 
 @router.post("/webhooks/payments")

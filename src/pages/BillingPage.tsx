@@ -22,6 +22,7 @@ import {
 import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api/client';
 import type { CheckoutVerifyResponse } from '../lib/api/types';
 import { useAuth } from '../lib/auth/AuthContext';
+import { resolveBillingDisplayState } from '../lib/billing/displayState';
 import type { AppRoute } from '../lib/router';
 import { setIntendedRoute } from '../lib/router';
 
@@ -92,24 +93,6 @@ function maskRefId(ref: string | null | undefined): string {
   return `${ref.slice(0, 10)}…${ref.slice(-6)}`;
 }
 
-function getSubscriptionBadge(status: string | undefined, planName: string) {
-  if (planName === 'Free') {
-    return { label: 'Free Tier', tone: 'border-slate-200 bg-slate-100 text-slate-700' };
-  }
-  switch ((status || '').toLowerCase()) {
-    case 'active':
-      return { label: 'Subscription active', tone: 'border-emerald-200 bg-emerald-50 text-emerald-800' };
-    case 'past_due':
-      return { label: 'Payment due', tone: 'border-amber-200 bg-amber-50 text-amber-900' };
-    case 'canceled':
-      return { label: 'Cancelled', tone: 'border-slate-300 bg-slate-100 text-slate-700' };
-    case 'expired':
-      return { label: 'Subscription expired', tone: 'border-red-200 bg-red-50 text-red-800' };
-    default:
-      return { label: 'Pending', tone: 'border-amber-200 bg-amber-50 text-amber-900' };
-  }
-}
-
 export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   const {
     isConfigured,
@@ -121,6 +104,8 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     transactions,
     payments,
     billingError,
+    billingErrorDetail,
+    billingStatus,
     isDataLoading,
     refreshAccountData,
   } = useAuth();
@@ -142,6 +127,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   const [manualSubId, setManualSubId] = useState<string>('');
 
   const verifiedKeysRef = useRef<Set<string>>(new Set());
+  const pendingRetryCountRef = useRef<number>(0);
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
@@ -153,15 +139,23 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   const apiBase = getApiBaseUrl();
 
   const runServerVerification = useCallback(
-    async (target: {
-      kind: 'credit_pack' | 'subscription';
-      order_id?: string;
-      subscription_id?: string;
-    }) => {
+    async (
+      target: {
+        kind: 'credit_pack' | 'subscription';
+        order_id?: string;
+        subscription_id?: string;
+      },
+      isAutoRetry = false,
+    ) => {
       if (!session?.access_token) return;
+      if (!isAutoRetry) {
+        pendingRetryCountRef.current = 0;
+      }
       setVerifyingCheckout(true);
       setCheckoutError(null);
-      setVerificationResult(null);
+      if (!isAutoRetry) {
+        setVerificationResult(null);
+      }
       setLastVerifiedTarget(target);
 
       const client = new CleanDataApiClient(apiBase, session.access_token);
@@ -190,10 +184,30 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   useEffect(() => {
     if (typeof window === 'undefined' || !session?.access_token || !user) return;
     const params = new URLSearchParams(window.location.search);
-    const orderId = params.get('order_id')?.trim() || undefined;
-    const subscriptionId =
-      (params.get('subscription_id') || params.get('sub_id'))?.trim() || undefined;
-    const kindParam = params.get('kind')?.trim() || undefined;
+    const cleanUrlParam = (value: string | null): string | undefined => {
+      const trimmed = value?.trim();
+      if (!trimmed) return undefined;
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) return undefined;
+      return trimmed;
+    };
+
+    const orderId = cleanUrlParam(params.get('order_id') || params.get('orderId'));
+    const subscriptionId = cleanUrlParam(
+      params.get('subscription_id') || params.get('sub_id') || params.get('cf_subscriptionId'),
+    );
+    const kindParam = cleanUrlParam(params.get('kind'));
+    const hasReturnParams =
+      params.has('order_id') ||
+      params.has('orderId') ||
+      params.has('subscription_id') ||
+      params.has('sub_id') ||
+      params.has('cf_subscriptionId') ||
+      params.has('kind');
+
+    if (hasReturnParams) {
+      // Remove query parameters immediately so page reloads do not re-trigger checks
+      window.history.replaceState({}, '', window.location.pathname);
+    }
 
     let target: {
       kind: 'credit_pack' | 'subscription';
@@ -209,8 +223,6 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         order_id: orderId,
         subscription_id: subscriptionId,
       };
-      // Remove query parameters immediately so page reloads do not re-trigger checks
-      window.history.replaceState({}, '', window.location.pathname);
     } else {
       const pending = readPendingCheckout();
       if (pending && (pending.order_id || pending.subscription_id)) {
@@ -229,6 +241,31 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
     void runServerVerification(target);
   }, [session?.access_token, user, runServerVerification]);
+
+  // Bounded automatic re-check (up to 2 times) while Cashfree finishes asynchronous confirmation
+  useEffect(() => {
+    if (
+      verificationResult?.status !== 'pending' ||
+      !lastVerifiedTarget ||
+      verifyingCheckout ||
+      !session?.access_token ||
+      pendingRetryCountRef.current >= 2
+    ) {
+      return;
+    }
+    const delayMs = pendingRetryCountRef.current === 0 ? 3500 : 7000;
+    const timer = window.setTimeout(() => {
+      pendingRetryCountRef.current += 1;
+      void runServerVerification(lastVerifiedTarget, true);
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [
+    verificationResult?.status,
+    lastVerifiedTarget,
+    verifyingCheckout,
+    session?.access_token,
+    runServerVerification,
+  ]);
 
   const handleCheckout = async (kind: 'subscription' | 'credit_pack', itemName: string) => {
     setCheckoutError(null);
@@ -396,16 +433,24 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
     );
   }
 
-  const subBalance = wallet?.subscription_balance ?? 0;
-  const purBalance = wallet?.purchased_balance ?? 0;
+  const displayState = resolveBillingDisplayState({
+    billingStatus,
+    isDataLoading,
+    billingError,
+    billingErrorDetail,
+    activePlan,
+    wallet,
+    transactions,
+    payments,
+  });
   const paidPlans = SUBSCRIPTION_PLANS.filter((p) => p.monthlyPricePaise > 0);
   const currentPlanName = activePlan?.name ?? 'Free';
   const currentPlanPrice = activePlan?.monthly_price ?? 0;
   const canCancelActiveSub =
+    displayState.phase === 'loaded' &&
     currentPlanName !== 'Free' &&
     activePlan?.status === 'active' &&
     Boolean(activePlan?.provider_subscription_id);
-  const subBadge = getSubscriptionBadge(activePlan?.status, currentPlanName);
   const pendingCheckTarget =
     lastVerifiedTarget ??
     (activePlan?.provider_subscription_id && activePlan.status !== 'active'
@@ -446,16 +491,23 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {billingError && (
+      {displayState.isSyncUnavailable && (
         <div
           role="alert"
           className="flex items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950"
         >
           <div className="flex items-start gap-2.5">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
-            <div>
-              <p className="font-semibold">Unable to synchronize live billing status from backend</p>
-              <p className="mt-0.5 text-amber-900">{billingError}</p>
+            <div className="space-y-1">
+              <p className="font-semibold">{displayState.errorTitle}</p>
+              <p className="text-amber-900">{displayState.errorMessage}</p>
+              {(displayState.errorCode || displayState.errorRequestId) && (
+                <p className="font-mono text-[11px] text-amber-800">
+                  {displayState.errorCode ? `Code: ${displayState.errorCode}` : ''}
+                  {displayState.errorCode && displayState.errorRequestId ? ' · ' : ''}
+                  {displayState.errorRequestId ? `Request ID: ${displayState.errorRequestId}` : ''}
+                </p>
+              )}
             </div>
           </div>
           <button
@@ -464,7 +516,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
             disabled={isDataLoading}
             className="shrink-0 rounded-md border border-amber-400 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100 cursor-pointer disabled:opacity-50"
           >
-            Retry
+            {isDataLoading ? 'Retrying...' : 'Retry'}
           </button>
         </div>
       )}
@@ -474,18 +526,30 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs font-medium text-slate-500">Active Subscription</p>
-            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium ${subBadge.tone}`}>
-              {subBadge.label}
+            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium ${displayState.badgeTone}`}>
+              {displayState.badgeLabel}
             </span>
           </div>
-          <p className="font-display text-2xl font-bold text-slate-950">{currentPlanName}</p>
-          <p className="font-mono text-xs text-slate-600 tabular-nums">
-            {formatInrFromPaise(currentPlanPrice)}/mo · {activePlan?.monthly_credits ?? 0} monthly credits
+          <p className="font-display text-2xl font-bold text-slate-950">
+            {displayState.planDisplayName}
           </p>
-          {currentPlanName !== 'Free' && activePlan?.current_period_end && (
-            <p className="font-mono text-[11px] text-slate-500 tabular-nums">
-              {activePlan.status === 'canceled' ? 'Ended / expires: ' : 'Next cycle: '}
-              {formatDate(activePlan.current_period_end)}
+          {displayState.phase === 'loaded' ? (
+            <>
+              <p className="font-mono text-xs text-slate-600 tabular-nums">
+                {formatInrFromPaise(currentPlanPrice)}/mo · {activePlan?.monthly_credits ?? 0} monthly credits
+              </p>
+              {currentPlanName !== 'Free' && activePlan?.current_period_end && (
+                <p className="font-mono text-[11px] text-slate-500 tabular-nums">
+                  {activePlan.status === 'canceled' ? 'Ended / expires: ' : 'Next cycle: '}
+                  {formatDate(activePlan.current_period_end)}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-slate-500">
+              {displayState.phase === 'loading'
+                ? 'Synchronizing live subscription status...'
+                : 'Live subscription status could not be loaded. Click Retry above.'}
             </p>
           )}
 
@@ -530,21 +594,28 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
           <p className="text-xs font-medium text-slate-500">Subscription Credits (Spent First)</p>
           <p className="font-mono text-2xl font-bold text-slate-950 tabular-nums">
-            {subBalance.toLocaleString()}
+            {displayState.subscriptionCreditsText}
           </p>
           <p className="font-mono text-xs text-slate-600 tabular-nums">
-            Expires: {wallet?.subscription_expires_at ? formatDate(wallet.subscription_expires_at) : 'Monthly cycle'}
+            {displayState.phase === 'loaded'
+              ? `Expires: ${wallet?.subscription_expires_at ? formatDate(wallet.subscription_expires_at) : 'Monthly cycle'}`
+              : displayState.phase === 'loading'
+              ? 'Loading credit wallet...'
+              : 'Live balance sync unavailable'}
           </p>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
           <p className="text-xs font-medium text-slate-500">Purchased Pack Credits</p>
           <p className="font-mono text-2xl font-bold text-slate-950 tabular-nums">
-            {purBalance.toLocaleString()}
+            {displayState.purchasedCreditsText}
           </p>
           <p className="font-mono text-xs text-slate-600 tabular-nums">
-            Valid {PURCHASED_CREDIT_EXPIRY_MONTHS} months ·{' '}
-            {wallet?.purchased_expires_at ? formatDate(wallet.purchased_expires_at) : 'No active packs'}
+            {displayState.phase === 'loaded'
+              ? `Valid ${PURCHASED_CREDIT_EXPIRY_MONTHS} months · ${wallet?.purchased_expires_at ? formatDate(wallet.purchased_expires_at) : 'No active packs'}`
+              : displayState.phase === 'loading'
+              ? 'Loading credit wallet...'
+              : 'Live balance sync unavailable'}
           </p>
         </div>
       </section>
@@ -700,9 +771,10 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         </div>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           {paidPlans.map((plan) => {
-            const isCurrent = currentPlanName === plan.name && activePlan?.status === 'active';
-            const isUpgrade = currentPlanName !== 'Free' && plan.monthlyPricePaise > currentPlanPrice;
-            const isDowngrade = currentPlanName !== 'Free' && plan.monthlyPricePaise < currentPlanPrice;
+            const isLoaded = displayState.phase === 'loaded';
+            const isCurrent = isLoaded && currentPlanName === plan.name && activePlan?.status === 'active';
+            const isUpgrade = isLoaded && currentPlanName !== 'Free' && plan.monthlyPricePaise > currentPlanPrice;
+            const isDowngrade = isLoaded && currentPlanName !== 'Free' && plan.monthlyPricePaise < currentPlanPrice;
             const busy = checkoutBusyItem === `subscription:${plan.name}`;
             return (
               <div
@@ -817,7 +889,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
         {transactions.length === 0 ? (
           <p className="px-5 py-8 text-center text-xs text-slate-500">
-            No credit ledger transactions recorded yet.
+            {displayState.ledgerEmptyMessage ?? 'No credit ledger transactions recorded yet.'}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -876,7 +948,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
         {payments.length === 0 ? (
           <p className="px-5 py-8 text-center text-xs text-slate-500">
-            No Cashfree payment sessions created yet.
+            {displayState.paymentsEmptyMessage ?? 'No Cashfree payment sessions created yet.'}
           </p>
         ) : (
           <div className="overflow-x-auto">

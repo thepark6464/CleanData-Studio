@@ -906,70 +906,100 @@ class SupabaseServiceClient:
         self, *, user_id: str, name: str, key_hash: str, prefix: str
     ) -> dict[str, Any]:
         headers = {**self._headers(), "Prefer": "return=representation"}
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{self.base_url}/rest/v1/api_keys",
-                headers=headers,
-                json={
-                    "user_id": user_id,
-                    "name": name,
-                    "key_hash": key_hash,
-                    "prefix": prefix,
-                },
-            )
-            resp.raise_for_status()
-            row = resp.json()[0]
-            row.pop("key_hash", None)
-            return row
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{self.base_url}/rest/v1/api_keys",
+                    headers=headers,
+                    json={
+                        "user_id": user_id,
+                        "name": name,
+                        "key_hash": key_hash,
+                        "prefix": prefix,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise SupabaseOperationError(
+                operation="insert_api_keys",
+                db_error_code=type(exc).__name__,
+                error_message=str(exc) or "Unable to create API key.",
+            ) from exc
+        rows = self._parse_response_json("insert_api_keys", resp)
+        row = rows[0] if isinstance(rows, list) and rows else {}
+        row.pop("key_hash", None)
+        return row
 
     async def list_api_keys(self, user_id: str) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{self.base_url}/rest/v1/api_keys",
-                headers=self._headers(),
-                params={
-                    "select": "id,user_id,name,prefix,last_used_at,revoked_at,created_at",
-                    "user_id": f"eq.{user_id}",
-                    "order": "created_at.desc",
-                },
-            )
-            resp.raise_for_status()
-            return list(resp.json())
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/v1/api_keys",
+                    headers=self._headers(),
+                    params={
+                        "select": "id,user_id,name,prefix,last_used_at,revoked_at,created_at",
+                        "user_id": f"eq.{user_id}",
+                        "order": "created_at.desc",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise SupabaseOperationError(
+                operation="select_api_keys",
+                db_error_code=type(exc).__name__,
+                error_message=str(exc) or "Unable to fetch API keys.",
+            ) from exc
+        rows = self._parse_response_json("select_api_keys", resp)
+        return list(rows) if isinstance(rows, list) else []
 
     async def revoke_api_key(self, user_id: str, key_id: str) -> bool:
         headers = {**self._headers(), "Prefer": "return=representation"}
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.patch(
-                f"{self.base_url}/rest/v1/api_keys",
-                headers=headers,
-                params={"id": f"eq.{key_id}", "user_id": f"eq.{user_id}"},
-                json={"revoked_at": dt.datetime.now(dt.timezone.utc).isoformat()},
-            )
-            resp.raise_for_status()
-            return len(resp.json()) > 0
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.patch(
+                    f"{self.base_url}/rest/v1/api_keys",
+                    headers=headers,
+                    params={"id": f"eq.{key_id}", "user_id": f"eq.{user_id}"},
+                    json={"revoked_at": dt.datetime.now(dt.timezone.utc).isoformat()},
+                )
+        except httpx.HTTPError as exc:
+            raise SupabaseOperationError(
+                operation="revoke_api_keys",
+                db_error_code=type(exc).__name__,
+                error_message=str(exc) or "Unable to revoke API key.",
+            ) from exc
+        rows = self._parse_response_json("revoke_api_keys", resp)
+        return isinstance(rows, list) and len(rows) > 0
 
     async def lookup_api_key_by_hash(self, key_hash: str) -> dict[str, Any] | None:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{self.base_url}/rest/v1/api_keys",
-                headers=self._headers(),
-                params={
-                    "select": "id,user_id,prefix,revoked_at",
-                    "key_hash": f"eq.{key_hash}",
-                    "limit": "1",
-                },
-            )
-            resp.raise_for_status()
-            rows = resp.json()
-            return rows[0] if rows else None
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/v1/api_keys",
+                    headers=self._headers(),
+                    params={
+                        "select": "id,user_id,prefix,revoked_at",
+                        "key_hash": f"eq.{key_hash}",
+                        "limit": "1",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise SupabaseOperationError(
+                operation="lookup_api_key",
+                db_error_code=type(exc).__name__,
+                error_message=str(exc) or "Unable to look up API key.",
+            ) from exc
+        rows = self._parse_response_json("lookup_api_key", resp)
+        return rows[0] if isinstance(rows, list) and rows else None
 
     async def touch_api_key_last_used(self, key_id: str) -> None:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.patch(
-                f"{self.base_url}/rest/v1/api_keys?id=eq.{key_id}",
-                headers=self._headers(),
-                json={"last_used_at": dt.datetime.now(dt.timezone.utc).isoformat()},
-            )
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.patch(
+                    f"{self.base_url}/rest/v1/api_keys?id=eq.{key_id}",
+                    headers=self._headers(),
+                    json={"last_used_at": dt.datetime.now(dt.timezone.utc).isoformat()},
+                )
+        except httpx.HTTPError:
+            pass
 
     async def record_api_usage(
         self,
@@ -980,33 +1010,43 @@ class SupabaseServiceClient:
         credits_used: int,
         status_code: int,
     ) -> None:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
-                f"{self.base_url}/rest/v1/api_usage",
-                headers=self._headers(),
-                json={
-                    "user_id": user_id,
-                    "api_key_id": api_key_id,
-                    "endpoint": endpoint,
-                    "credits_used": credits_used,
-                    "status_code": status_code,
-                },
-            )
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{self.base_url}/rest/v1/api_usage",
+                    headers=self._headers(),
+                    json={
+                        "user_id": user_id,
+                        "api_key_id": api_key_id,
+                        "endpoint": endpoint,
+                        "credits_used": credits_used,
+                        "status_code": status_code,
+                    },
+                )
+        except httpx.HTTPError:
+            pass
 
     async def list_api_usage(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{self.base_url}/rest/v1/api_usage",
-                headers=self._headers(),
-                params={
-                    "select": "id,api_key_id,endpoint,credits_used,status_code,created_at",
-                    "user_id": f"eq.{user_id}",
-                    "order": "created_at.desc",
-                    "limit": str(limit),
-                },
-            )
-            resp.raise_for_status()
-            return list(resp.json())
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/v1/api_usage",
+                    headers=self._headers(),
+                    params={
+                        "select": "id,api_key_id,endpoint,credits_used,status_code,created_at",
+                        "user_id": f"eq.{user_id}",
+                        "order": "created_at.desc",
+                        "limit": str(limit),
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise SupabaseOperationError(
+                operation="select_api_usage",
+                db_error_code=type(exc).__name__,
+                error_message=str(exc) or "Unable to fetch API usage.",
+            ) from exc
+        rows = self._parse_response_json("select_api_usage", resp)
+        return list(rows) if isinstance(rows, list) else []
 
 
 def map_billing_db_error(
