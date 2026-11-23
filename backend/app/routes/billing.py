@@ -14,7 +14,7 @@ from app.models import (
     CheckoutVerifyResponse,
     SubscriptionCancelResponse,
 )
-from app.services.credits import PACK_CATALOG, PLAN_CATALOG, PackSpec, PlanSpec
+from app.services.credits import PACK_CATALOG, PLAN_CATALOG, CreditPackSpec, PlanSpec
 from app.services.payments import (
     OrderVerificationResult,
     PaymentProviderAdapter,
@@ -209,7 +209,7 @@ async def _reconcile_subscription_record(
     return plan_spec.name
 
 
-def _resolve_pack_from_cashfree(verification: OrderVerificationResult) -> PackSpec | None:
+def _resolve_pack_from_cashfree(verification: OrderVerificationResult) -> CreditPackSpec | None:
     tags = verification.order_tags or {}
     tag_item = str(tags.get("item_name") or "").strip()
     if tag_item and tag_item in PACK_CATALOG:
