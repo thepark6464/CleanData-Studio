@@ -1645,11 +1645,13 @@ def test_cashfree_checkout_return_urls_target_backend_return_route():
             )
 
     adapter = CashfreePaymentAdapter(
-        env="sandbox",
-        app_id="cf_app_test",
-        secret_key="cf_secret_test",
-        webhook_secret="cf_wh_test",
-        frontend_origin="https://cleandata-studio.vercel.app",
+        Settings(
+            cashfree_env="sandbox",
+            cashfree_app_id="cf_app_test",
+            cashfree_secret_key="cf_secret_test",
+            cashfree_webhook_secret="cf_wh_test",
+            frontend_url="https://cleandata-studio.vercel.app",
+        )
     )
 
     async def _run():

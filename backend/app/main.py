@@ -45,7 +45,28 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:10]}"
         request.state.request_id = request_id
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            log_event(
+                "unhandled_middleware_error",
+                request_id,
+                method=request.method,
+                path=request.url.path,
+                error_type=type(exc).__name__,
+                error_detail=str(exc)[:240],
+            )
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "INTERNAL_SERVER_ERROR",
+                        "message": f"Unexpected server error ({type(exc).__name__}).",
+                        "request_id": request_id,
+                    },
+                },
+            )
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
