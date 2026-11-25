@@ -5,8 +5,11 @@ export type AppRoute =
   | '/cleaner'
   | '/pricing'
   | '/developers'
+  | '/about'
+  | '/contact'
   | '/privacy'
   | '/terms'
+  | '/refund-policy'
   | '/auth'
   | '/dashboard'
   | '/dashboard/billing'
@@ -19,8 +22,11 @@ const VALID_ROUTES = new Set<AppRoute>([
   '/cleaner',
   '/pricing',
   '/developers',
+  '/about',
+  '/contact',
   '/privacy',
   '/terms',
+  '/refund-policy',
   '/auth',
   '/dashboard',
   '/dashboard/billing',
@@ -39,6 +45,16 @@ const ROUTE_ALIASES: Record<string, AppRoute> = {
   '/settings': '/dashboard/settings',
   '/billing': '/dashboard/billing',
   '/api-keys': '/dashboard/api-keys',
+  '/about-us': '/about',
+  '/contact-us': '/contact',
+  '/support': '/contact',
+  '/privacy-policy': '/privacy',
+  '/terms-and-conditions': '/terms',
+  '/terms-of-service': '/terms',
+  '/refunds': '/refund-policy',
+  '/refund': '/refund-policy',
+  '/refund-and-cancellation-policy': '/refund-policy',
+  '/cancellation-policy': '/refund-policy',
 };
 
 const INTENDED_ROUTE_KEY = 'cleandata_intended_route';

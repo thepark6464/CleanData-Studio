@@ -23,8 +23,8 @@ import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api
 import type { CheckoutVerifyResponse } from '../lib/api/types';
 import { useAuth } from '../lib/auth/AuthContext';
 import { resolveBillingDisplayState } from '../lib/billing/displayState';
-import type { AppRoute } from '../lib/router';
-import { setIntendedRoute } from '../lib/router';
+import { MERCHANT_INFO } from '../config/merchant';
+import { AppLink, setIntendedRoute, type AppRoute } from '../lib/router';
 
 interface BillingPageProps {
   onNavigate: (to: AppRoute) => void;
@@ -1001,6 +1001,23 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
             </table>
           </div>
         )}
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white px-5 py-4 text-xs text-slate-600 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p>
+          Billing &amp; Support ({MERCHANT_INFO.legalName})
+        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <AppLink to="/refund-policy" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Refund &amp; Cancellation Policy
+          </AppLink>
+          <AppLink to="/terms" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Terms &amp; Conditions
+          </AppLink>
+          <AppLink to="/contact" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Contact Us
+          </AppLink>
+        </div>
       </section>
     </div>
   );

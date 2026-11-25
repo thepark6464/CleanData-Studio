@@ -251,7 +251,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onNavigate }) => {
       </section>
 
       {/* Policy & Illustrative Revenue Footnote */}
-      <section className="rounded-xl border border-slate-200 bg-white p-5 text-xs text-slate-600 space-y-2">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 text-xs text-slate-600 space-y-2.5">
         <p>
           <strong className="font-semibold text-slate-900">Credit &amp; Expiry Policy:</strong>{' '}
           Subscription credits reset monthly and expire at the end of each billing cycle. Purchased credit packs expire after {PURCHASED_CREDIT_EXPIRY_MONTHS} months. Server credits are reserved on job creation, committed only upon completion, and automatically refunded if processing fails.
@@ -264,6 +264,21 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onNavigate }) => {
             (p) => `${p.customers.toLocaleString()} customers = ${formatInrFromPaise(p.monthlyRevenuePaise)}`,
           ).join(' · ')}
           .
+        </p>
+        <p className="pt-1 border-t border-slate-100 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="font-medium text-slate-800">Policies &amp; Support:</span>
+          <AppLink to="/refund-policy" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Refund &amp; Cancellation Policy
+          </AppLink>
+          <AppLink to="/terms" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Terms &amp; Conditions
+          </AppLink>
+          <AppLink to="/privacy" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Privacy Policy
+          </AppLink>
+          <AppLink to="/contact" onNavigate={onNavigate} className="text-blue-800 hover:underline">
+            Contact Us
+          </AppLink>
         </p>
       </section>
     </div>

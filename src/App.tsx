@@ -3,14 +3,16 @@ import { Footer } from './components/Footer';
 import { TopBar } from './components/TopBar';
 import { AuthProvider, useAuth } from './lib/auth/AuthContext';
 import { useAppRouter } from './lib/router';
+import { AboutPage } from './pages/AboutPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { BillingPage } from './pages/BillingPage';
 import { CleanerPage } from './pages/CleanerPage';
+import { ContactPage } from './pages/ContactPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DevelopersPage } from './pages/DevelopersPage';
 import { LandingPage } from './pages/LandingPage';
-import { PrivacyPage, TermsPage } from './pages/LegalPages';
+import { PrivacyPage, RefundPolicyPage, TermsPage } from './pages/LegalPages';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { PricingPage } from './pages/PricingPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -63,8 +65,11 @@ function AppShell() {
         {route === '/cleaner' && <CleanerPage fileInputRef={fileInputRef} />}
         {route === '/pricing' && <PricingPage onNavigate={navigate} />}
         {route === '/developers' && <DevelopersPage onNavigate={navigate} />}
-        {route === '/privacy' && <PrivacyPage />}
-        {route === '/terms' && <TermsPage />}
+        {route === '/about' && <AboutPage onNavigate={navigate} />}
+        {route === '/contact' && <ContactPage onNavigate={navigate} />}
+        {route === '/privacy' && <PrivacyPage onNavigate={navigate} />}
+        {route === '/terms' && <TermsPage onNavigate={navigate} />}
+        {route === '/refund-policy' && <RefundPolicyPage onNavigate={navigate} />}
         {route === '/auth' && <AuthPage onNavigate={navigate} />}
         {route === '/dashboard' && <DashboardPage onNavigate={navigate} />}
         {route === '/dashboard/billing' && <BillingPage onNavigate={navigate} />}

@@ -25,7 +25,14 @@ const NAV_LINKS: Array<{ to: AppRoute; label: string }> = [
   { to: '/pricing', label: 'Pricing' },
   { to: '/developers', label: 'Developers' },
   { to: '/dashboard', label: 'Dashboard' },
-  { to: '/privacy', label: 'Privacy' },
+  { to: '/contact', label: 'Contact' },
+];
+
+const MOBILE_POLICY_LINKS: Array<{ to: AppRoute; label: string }> = [
+  { to: '/about', label: 'About Us' },
+  { to: '/privacy', label: 'Privacy Policy' },
+  { to: '/terms', label: 'Terms & Conditions' },
+  { to: '/refund-policy', label: 'Refund Policy' },
 ];
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -311,6 +318,23 @@ export const TopBar: React.FC<TopBarProps> = ({
               </AppLink>
             );
           })}
+
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {MOBILE_POLICY_LINKS.map((link) => (
+              <AppLink
+                key={link.to}
+                to={link.to}
+                tabIndex={mobileOpen ? 0 : -1}
+                onNavigate={(to) => {
+                  setMobileOpen(false);
+                  onNavigate(to);
+                }}
+                className="caption-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-center text-slate-700 hover:bg-slate-100"
+              >
+                {link.label}
+              </AppLink>
+            ))}
+          </div>
 
           {isSignedIn ? (
             <div className="mt-2 grid grid-cols-2 gap-3">
