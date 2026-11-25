@@ -1718,7 +1718,7 @@ def test_subscription_cycle1_payment_dedup_and_month2_renewal(tmp_path):
     store = app.state.credits
     uid = "user-cycle1-dedup"
     sub_id = "cd_sub_cycle1_test"
-    store.create_payment_record(
+    store.create_pending_payment(
         user_id=uid,
         amount_paise=79900,
         currency="INR",
@@ -1726,9 +1726,8 @@ def test_subscription_cycle1_payment_dedup_and_month2_renewal(tmp_path):
         provider_payment_id=sub_id,
         kind="subscription",
         item_name="Pro",
-        status="pending",
     )
-    store.register_subscription(
+    store.create_pending_subscription(
         user_id=uid,
         plan_name="Pro",
         provider="cashfree",
@@ -1758,10 +1757,10 @@ def test_subscription_cycle1_payment_dedup_and_month2_renewal(tmp_path):
     assert res2["credited"] is False
 
     summary_cycle1 = store.get_summary(uid)
-    assert summary_cycle1["wallet"]["subscription_balance"] == 500
-    assert len(summary_cycle1["payments"]) == 1
-    assert summary_cycle1["payments"][0]["status"] == "paid"
-    assert summary_cycle1["payments"][0]["provider_payment_id"] == sub_id
+    assert summary_cycle1.wallet.subscription_balance == 500
+    assert len(summary_cycle1.payments) == 1
+    assert summary_cycle1.payments[0].status == "paid"
+    assert summary_cycle1.payments[0].provider_payment_id == sub_id
 
     # Simulate Month 2 billing cycle (> 12 hours after Cycle 1)
     store.subscriptions[sub_id]["last_credited_at"] = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
@@ -1776,7 +1775,7 @@ def test_subscription_cycle1_payment_dedup_and_month2_renewal(tmp_path):
     )
     assert res3["credited"] is True
     summary_cycle2 = store.get_summary(uid)
-    assert len(summary_cycle2["payments"]) == 2
+    assert len(summary_cycle2.payments) == 2
 
 
 def test_api_keys_route_maps_supabase_failure_to_503():
