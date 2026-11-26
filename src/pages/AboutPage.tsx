@@ -39,8 +39,8 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-4 py-10 sm:px-6 sm:py-14">
       <header className="space-y-3">
-        <p className="text-xs font-medium text-blue-800">About Us</p>
-        <h1 className="font-display text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl [text-wrap:balance]">
+        <p className="text-xs font-semibold text-blue-700">About Us</p>
+        <h1 className="font-display text-3xl font-bold tracking-tight hero-heading-gradient sm:text-4xl [text-wrap:balance]">
           About {MERCHANT_INFO.brandName}
         </h1>
         <p className="text-sm leading-relaxed text-slate-600 sm:text-base">
@@ -50,10 +50,10 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
 
       <section
         aria-labelledby="about-operator-heading"
-        className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 space-y-5"
+        className="glass-surface-elevated rounded-3xl p-6 sm:p-8 space-y-5"
       >
         <div className="flex items-start gap-3">
-          <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-blue-800">
+          <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-blue-200/80 bg-white/80 text-blue-700">
             <UserCheck className="h-5 w-5" aria-hidden="true" />
           </div>
           <div className="space-y-1">
@@ -67,7 +67,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
               {MERCHANT_INFO.brandName} (available at{' '}
               <a
                 href={MERCHANT_INFO.websiteUrl}
-                className="font-mono text-xs text-blue-800 underline underline-offset-2 hover:text-blue-950"
+                className="font-mono text-xs text-blue-700 underline underline-offset-2 hover:text-blue-900"
               >
                 {MERCHANT_INFO.websiteUrl}
               </a>
@@ -77,7 +77,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
           </div>
         </div>
 
-        <dl className="grid grid-cols-1 gap-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:grid-cols-2">
+        <dl className="glass-table-wrap grid grid-cols-1 gap-4 rounded-2xl p-4 sm:grid-cols-2">
           <div className="space-y-1">
             <dt className="text-xs font-medium text-slate-500">Legal Name / Operator</dt>
             <dd className="text-sm font-semibold text-slate-950">{MERCHANT_INFO.legalName}</dd>
@@ -87,7 +87,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
             <dd className="text-sm font-mono text-slate-900 break-all">
               <a
                 href={MERCHANT_INFO.websiteUrl}
-                className="text-blue-800 hover:text-blue-950 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded"
+                className="text-blue-700 hover:text-blue-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 rounded"
               >
                 {MERCHANT_INFO.websiteUrl}
               </a>
@@ -109,9 +109,9 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
             return (
               <article
                 key={item.title}
-                className="rounded-xl border border-slate-200 bg-white p-5 space-y-3"
+                className="glass-surface glass-card-hover rounded-3xl p-5 space-y-3"
               >
-                <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-900">
+                <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-blue-200/70 bg-white/80 text-blue-700">
                   <Icon className="h-4 w-4" aria-hidden="true" />
                 </div>
                 <h3 className="font-display text-sm font-semibold text-slate-950">{item.title}</h3>
@@ -124,7 +124,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
 
       <section
         aria-labelledby="about-standards-heading"
-        className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 space-y-4"
+        className="glass-surface rounded-3xl p-6 sm:p-8 space-y-4"
       >
         <h2
           id="about-standards-heading"
@@ -134,30 +134,30 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
         </h2>
         <ul className="space-y-2.5 text-sm text-slate-700">
           <li className="flex items-start gap-2.5">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
             <span>
               <strong>Transparent pricing in INR:</strong> Clear free browser tier, monthly recurring plans (Starter, Pro, Business), and 12-month one-time credit packs processed via Cashfree Payments.
             </span>
           </li>
           <li className="flex items-start gap-2.5">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
             <span>
               <strong>Zero AI model training on customer files:</strong> Every transformation is deterministic and rule-based, with before-and-after quality scoring so nothing is silently altered.
             </span>
           </li>
           <li className="flex items-start gap-2.5">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
             <span>
               <strong>Clear billing &amp; policy controls:</strong> Self-service subscription cancellation, server-side payment reconciliation, and transparent privacy and refund policies.
             </span>
           </li>
         </ul>
 
-        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
+        <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-slate-200/70">
           <AppLink
             to="/contact"
             onNavigate={onNavigate}
-            className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+            className="glass-btn-primary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           >
             <span>Contact &amp; Support</span>
             <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
@@ -165,14 +165,14 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
           <AppLink
             to="/pricing"
             onNavigate={onNavigate}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+            className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           >
             <span>View Pricing</span>
           </AppLink>
           <AppLink
             to="/refund-policy"
             onNavigate={onNavigate}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+            className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
           >
             <span>Refund &amp; Cancellation Policy</span>
           </AppLink>

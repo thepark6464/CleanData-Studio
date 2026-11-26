@@ -1,5 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { AlertCircle, FileSpreadsheet, ShieldCheck, Upload } from 'lucide-react';
+import {
+  AlertCircle,
+  FileSpreadsheet,
+  Loader2,
+  ShieldCheck,
+  Sparkles,
+  Upload,
+} from 'lucide-react';
 
 interface DropzonePanelProps {
   onFileSelected: (file: File) => void;
@@ -68,12 +75,19 @@ export const DropzonePanel: React.FC<DropzonePanelProps> = ({
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        className={`relative rounded-xl border-2 border-dashed bg-white p-8 sm:p-10 text-center transition-colors ${
+        className={`glass-surface-elevated relative overflow-hidden rounded-3xl p-7 sm:p-12 text-center transition-all duration-300 ${
           isDragging
-            ? 'border-blue-600 bg-blue-50/40'
-            : 'border-slate-300 hover:border-slate-400'
+            ? 'ring-2 ring-blue-500 border-blue-400 scale-[1.005] bg-blue-50/40'
+            : 'hover:border-blue-300/80'
         }`}
       >
+        {/* Subtle inner dashed glass frame */}
+        <div
+          className={`pointer-events-none absolute inset-3 rounded-2xl border-2 border-dashed transition-colors duration-300 ${
+            isDragging ? 'border-blue-500/80' : 'border-slate-300/70'
+          }`}
+        />
+
         <input
           ref={fileInputRef}
           type="file"
@@ -83,20 +97,34 @@ export const DropzonePanel: React.FC<DropzonePanelProps> = ({
           className="sr-only"
         />
 
-        <div className="mx-auto flex max-w-xl flex-col items-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-blue-700">
-            <FileSpreadsheet className="h-6 w-6" aria-hidden="true" />
+        <div className="relative z-10 mx-auto flex max-w-xl flex-col items-center">
+          <div
+            className={`mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/90 bg-gradient-to-br from-blue-600/12 via-cyan-500/10 to-violet-600/12 text-blue-700 shadow-sm transition-transform duration-300 ${
+              isDragging ? 'scale-110' : ''
+            }`}
+          >
+            {isLoading ? (
+              <Loader2 className="h-6 w-6 animate-spin text-blue-700" aria-hidden="true" />
+            ) : (
+              <FileSpreadsheet className="h-6 w-6" aria-hidden="true" />
+            )}
           </div>
 
           <h2
             id="upload-heading"
-            className="font-display text-xl font-semibold text-slate-900"
+            className="font-display text-xl sm:text-2xl font-semibold tracking-tight text-slate-950"
           >
-            Drop a CSV or XLSX file to inspect and clean
+            {isDragging
+              ? 'Release to inspect spreadsheet'
+              : 'Drop a CSV or XLSX file to inspect and clean'}
           </h2>
 
-          <p className="mt-2 text-sm text-slate-600 leading-relaxed">
+          <p className="mt-2.5 text-sm text-slate-600 leading-relaxed">
             Auto-detects UTF-8, UTF-8 BOM, or Windows-1252 encoding, CSV delimiters, and static XLSX worksheets (zero formula evaluation). Browser limit: 5 MB.
+          </p>
+
+          <p className="mt-2 font-mono text-[11px] text-slate-500">
+            CSV · TSV · TXT · XLSX · Up to 5 MB browser-local
           </p>
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -104,7 +132,7 @@ export const DropzonePanel: React.FC<DropzonePanelProps> = ({
               type="button"
               disabled={isLoading}
               onClick={() => fileInputRef.current?.click()}
-              className="inline-flex min-h-[42px] items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-800 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
+              className="glass-btn-primary inline-flex min-h-[44px] items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Upload className="h-4 w-4" aria-hidden="true" />
               <span>{isLoading ? 'Inspecting file...' : 'Browse CSV or XLSX'}</span>
@@ -114,14 +142,15 @@ export const DropzonePanel: React.FC<DropzonePanelProps> = ({
               type="button"
               disabled={isLoading}
               onClick={onLoadSampleFixture}
-              className="inline-flex min-h-[42px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[44px] items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
             >
+              <Sparkles className="h-4 w-4 text-violet-600" aria-hidden="true" />
               <span>Load Messy Sample Fixture</span>
             </button>
           </div>
 
-          <div className="mt-5 flex items-center justify-center gap-2 text-xs text-slate-500">
-            <ShieldCheck className="h-4 w-4 text-emerald-700 shrink-0" aria-hidden="true" />
+          <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-600">
+            <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" aria-hidden="true" />
             <span>
               Browser-only processing · File contents never leave your device or hit a server
             </span>
@@ -132,12 +161,12 @@ export const DropzonePanel: React.FC<DropzonePanelProps> = ({
       {error && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900"
+          className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-sm text-rose-950 backdrop-blur-md"
         >
-          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-700" aria-hidden="true" />
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-600" aria-hidden="true" />
           <div className="space-y-1">
             <p className="font-semibold">{error.title}</p>
-            {error.details && <p className="text-red-800">{error.details}</p>}
+            {error.details && <p className="text-rose-800">{error.details}</p>}
           </div>
         </div>
       )}

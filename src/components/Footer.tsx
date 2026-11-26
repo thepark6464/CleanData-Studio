@@ -7,20 +7,20 @@ interface FooterProps {
 }
 
 const LINK_CLASS =
-  'rounded py-1 text-slate-600 transition-colors duration-300 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700';
+  'rounded py-1 text-slate-600 transition-colors duration-200 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600';
 
 export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
   return (
-    <footer className="border-t border-slate-200 bg-white py-10 sm:py-12">
+    <footer className="border-t border-white/80 bg-white/60 backdrop-blur-xl py-10 sm:py-12">
       <div className="mx-auto max-w-6xl space-y-8 px-4 sm:px-6">
         <div className="grid grid-cols-1 gap-8 md:grid-cols-12">
           <div className="space-y-3 md:col-span-5">
             <AppLink
               to="/"
               onNavigate={onNavigate}
-              className="title-4 inline-block rounded text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+              className="title-4 inline-flex items-center gap-2 rounded text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
             >
-              {MERCHANT_INFO.brandName}
+              <span className="font-semibold tracking-tight">{MERCHANT_INFO.brandName}</span>
             </AppLink>
             <p className="caption-5 max-w-sm leading-relaxed text-slate-600">
               Deterministic CSV and Excel data cleaning workbench and REST API. Browser cleaning runs locally without server uploads.
@@ -75,7 +75,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-slate-100 pt-5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 border-t border-slate-200/70 pt-5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
           <p>
             &copy; {new Date().getFullYear()} {MERCHANT_INFO.legalName}. All rights reserved.
           </p>

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Columns2,
   Download,
   FileJson,
   FileSpreadsheet,
@@ -40,7 +41,9 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
   result,
   columnTypes,
 }) => {
-  const [activeTab, setActiveTab] = useState<'cleaned' | 'diff' | 'issues' | 'report'>('cleaned');
+  const [activeTab, setActiveTab] = useState<
+    'cleaned' | 'compare' | 'diff' | 'issues' | 'report'
+  >('compare');
   const [diffFilter, setDiffFilter] = useState<'all' | 'modified' | 'removed'>('all');
   const [issueRuleFilter, setIssueRuleFilter] = useState<string>('all');
   const [destructiveApproved, setDestructiveApproved] = useState(false);
@@ -60,6 +63,11 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
     report.recordsRemoved - report.emptyRowsRemoved - report.duplicatesRemoved,
   );
 
+  const totalCellsCorrected = useMemo(
+    () => diffRows.reduce((sum, d) => sum + d.cellChanges.length, 0),
+    [diffRows],
+  );
+
   const filteredDiffRows = diffRows.filter((row) => {
     if (diffFilter === 'all') return row.status !== 'unchanged';
     return row.status === diffFilter;
@@ -71,32 +79,33 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
       : issues.filter((item) => item.rule_id === issueRuleFilter);
 
   const previewCleanedRows = result.rows.slice(0, 100);
+  const previewOriginalRows = result.originalRows.slice(0, 100);
 
   return (
     <section id="quality-score" aria-labelledby="review-heading" className="space-y-6">
-      <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
-        <div className="flex flex-col gap-4 border-b border-slate-100 pb-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="glass-surface rounded-2xl p-5 sm:p-6">
+        <div className="flex flex-col gap-4 border-b border-slate-200/70 pb-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2
               id="review-heading"
-              className="font-display text-lg font-semibold text-slate-900"
+              className="font-display text-lg font-semibold text-slate-950"
             >
-              Before/After Preview, Quality Score &amp; Export
+              04. Before / After Comparison, Quality Score &amp; Export
             </h2>
             <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600 font-mono tabular-nums">
               <span>Rows: {report.rowsBefore} → {report.rowsAfter}</span>
               <span aria-hidden="true">·</span>
-              <span>Changed: {report.recordsChanged}</span>
+              <span>Cells corrected: {totalCellsCorrected.toLocaleString()}</span>
               <span aria-hidden="true">·</span>
-              <span>Removed: {report.recordsRemoved}</span>
+              <span>Rows removed: {report.recordsRemoved.toLocaleString()}</span>
               <span aria-hidden="true">·</span>
               <span>Audit events: {issues.length.toLocaleString()}</span>
               <span aria-hidden="true">·</span>
-              <span>Formula-escaped cells: {report.formulaCellsEscaped}</span>
+              <span>Formula-escaped: {report.formulaCellsEscaped}</span>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() =>
@@ -106,10 +115,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   'application/json;charset=utf-8',
                 )
               }
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <FileJson className="h-4 w-4" aria-hidden="true" />
-              <span>Download Report JSON</span>
+              <FileJson className="h-4 w-4 text-violet-600" aria-hidden="true" />
+              <span>Report JSON</span>
             </button>
 
             <button
@@ -121,10 +130,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   'text/csv;charset=utf-8',
                 )
               }
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <ListChecks className="h-4 w-4" aria-hidden="true" />
-              <span>Download Issues CSV</span>
+              <ListChecks className="h-4 w-4 text-cyan-700" aria-hidden="true" />
+              <span>Issues CSV</span>
             </button>
 
             <button
@@ -137,10 +146,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                 });
                 triggerBlobDownload(blob, `cleaned_${baseName}.xlsx`);
               }}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
-              <span>Download Cleaned XLSX</span>
+              <FileSpreadsheet className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+              <span>Cleaned XLSX</span>
             </button>
 
             <button
@@ -153,7 +162,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   'text/csv;charset=utf-8',
                 )
               }
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
+              className="glass-btn-primary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Download className="h-4 w-4" aria-hidden="true" />
               <span>Download Cleaned CSV</span>
@@ -163,7 +172,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
 
         {/* Destructive-change approval gate */}
         {requiresApproval && (
-          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="mt-4 rounded-2xl border border-amber-300/80 bg-amber-50/85 p-4 backdrop-blur-sm">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden="true" />
               <div className="space-y-2 text-xs text-amber-950">
@@ -175,16 +184,47 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                     type="checkbox"
                     checked={destructiveApproved}
                     onChange={(e) => setDestructiveApproved(e.target.checked)}
-                    className="h-4 w-4 rounded border-amber-400 text-blue-700 focus:ring-blue-600 cursor-pointer"
+                    className="h-4 w-4 rounded border-amber-400 text-blue-600 focus:ring-blue-600 cursor-pointer"
                   />
                   <span>
-                    I have reviewed the Before vs. After diff and approve exporting the cleaned CSV without the removed rows.
+                    I have reviewed the Before vs. After diff and approve exporting the cleaned file without the removed rows.
                   </span>
                 </label>
               </div>
             </div>
           </div>
         )}
+
+        {/* Summary metric ribbon */}
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="glass-surface-subtle rounded-xl p-3.5">
+            <p className="text-[11px] font-medium text-slate-500">Rows Remaining</p>
+            <p className="mt-0.5 font-mono text-lg font-bold tabular-nums text-slate-950">
+              {report.rowsAfter.toLocaleString()}
+              <span className="ml-1 text-xs font-normal text-slate-500">
+                / {report.rowsBefore.toLocaleString()}
+              </span>
+            </p>
+          </div>
+          <div className="glass-surface-subtle rounded-xl p-3.5">
+            <p className="text-[11px] font-medium text-slate-500">Cells Corrected</p>
+            <p className="mt-0.5 font-mono text-lg font-bold tabular-nums text-blue-700">
+              {totalCellsCorrected.toLocaleString()}
+            </p>
+          </div>
+          <div className="glass-surface-subtle rounded-xl p-3.5">
+            <p className="text-[11px] font-medium text-slate-500">Rows Removed</p>
+            <p className="mt-0.5 font-mono text-lg font-bold tabular-nums text-amber-700">
+              {report.recordsRemoved.toLocaleString()}
+            </p>
+          </div>
+          <div className="glass-surface-subtle rounded-xl p-3.5">
+            <p className="text-[11px] font-medium text-slate-500">Quality Lift</p>
+            <p className="mt-0.5 font-mono text-lg font-bold tabular-nums text-emerald-700">
+              {report.qualityBefore.score} → {report.qualityAfter.score}
+            </p>
+          </div>
+        </div>
 
         {/* Transparent Quality Score Before vs After */}
         <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -203,43 +243,57 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
         </p>
 
         {/* Sub-tabs */}
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
-          <div className="inline-flex flex-wrap rounded-lg bg-slate-100 p-1" role="tablist">
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 pb-3">
+          <div className="glass-segmented inline-flex flex-wrap rounded-xl p-1" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'compare'}
+              onClick={() => setActiveTab('compare')}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                activeTab === 'compare'
+                  ? 'bg-white text-slate-950 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-950'
+              }`}
+            >
+              <Columns2 className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
+              <span>Side-by-Side Compare</span>
+            </button>
             <button
               type="button"
               role="tab"
               aria-selected={activeTab === 'cleaned'}
               onClick={() => setActiveTab('cleaned')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'cleaned'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-slate-950 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-950'
               }`}
             >
-              Cleaned Preview ({previewCleanedRows.length} rows)
+              Cleaned Output ({previewCleanedRows.length} rows)
             </button>
             <button
               type="button"
               role="tab"
               aria-selected={activeTab === 'diff'}
               onClick={() => setActiveTab('diff')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'diff'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-slate-950 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-950'
               }`}
             >
-              Before vs. After Diff ({diffRows.filter((d) => d.status !== 'unchanged').length})
+              Row Diff ({diffRows.filter((d) => d.status !== 'unchanged').length})
             </button>
             <button
               type="button"
               role="tab"
               aria-selected={activeTab === 'issues'}
               onClick={() => setActiveTab('issues')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'issues'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-slate-950 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-950'
               }`}
             >
               Audit Trail &amp; Merges ({issues.length.toLocaleString()})
@@ -249,10 +303,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
               role="tab"
               aria-selected={activeTab === 'report'}
               onClick={() => setActiveTab('report')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'report'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-slate-950 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-950'
               }`}
             >
               Operations &amp; Report
@@ -260,20 +314,139 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
           </div>
         </div>
 
-        {/* Tab content */}
+        {/* Side-by-Side Comparison View */}
+        {activeTab === 'compare' && (
+          <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <div className="glass-table-wrap overflow-x-auto rounded-xl">
+              <div className="border-b border-slate-200 bg-slate-50/90 px-3.5 py-2.5 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-800">
+                  Original Input (First {previewOriginalRows.length} rows)
+                </span>
+                <span className="font-mono text-[11px] text-slate-500">
+                  Score {report.qualityBefore.score}/100
+                </span>
+              </div>
+              <table className="w-full border-collapse text-left text-xs">
+                <thead className="bg-slate-50/70 text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="px-2.5 py-2 font-mono text-right border-r border-slate-200 w-10">
+                      #
+                    </th>
+                    {result.originalHeaders.map((h, i) => (
+                      <th key={`${h}-${i}`} className="px-2.5 py-2 font-semibold whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-mono">
+                  {previewOriginalRows.map((row, rowIdx) => {
+                    const diff = diffRows[rowIdx];
+                    const isRemoved = diff?.status === 'removed';
+                    return (
+                      <tr
+                        key={rowIdx}
+                        className={isRemoved ? 'bg-rose-50/70 text-rose-900' : 'hover:bg-slate-50/70'}
+                      >
+                        <td className="px-2.5 py-1.5 text-right text-slate-400 border-r border-slate-200 tabular-nums">
+                          {rowIdx + 1}
+                        </td>
+                        {result.originalHeaders.map((_, cIdx) => {
+                          const val = row[cIdx] ?? '';
+                          const wasChanged = diff?.cellChanges.some(
+                            (ch) => ch.columnIndex === cIdx,
+                          );
+                          return (
+                            <td
+                              key={cIdx}
+                              title={val}
+                              className={`max-w-[180px] truncate px-2.5 py-1.5 whitespace-pre ${
+                                isRemoved
+                                  ? 'line-through text-rose-700'
+                                  : wasChanged
+                                  ? 'bg-amber-50 text-amber-950'
+                                  : 'text-slate-700'
+                              }`}
+                            >
+                              {val === '' ? <span className="italic text-slate-400">empty</span> : val}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="glass-table-wrap overflow-x-auto rounded-xl border-emerald-200/80">
+              <div className="border-b border-emerald-200/70 bg-emerald-50/60 px-3.5 py-2.5 flex items-center justify-between">
+                <span className="text-xs font-semibold text-emerald-950">
+                  Cleaned Output (First {previewCleanedRows.length} rows)
+                </span>
+                <span className="font-mono text-[11px] font-semibold text-emerald-800">
+                  Score {report.qualityAfter.score}/100
+                </span>
+              </div>
+              {previewCleanedRows.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-600">
+                  0 data rows in cleaned output.
+                </div>
+              ) : (
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead className="bg-slate-50/70 text-slate-600 border-b border-slate-200">
+                    <tr>
+                      <th className="px-2.5 py-2 font-mono text-right border-r border-slate-200 w-10">
+                        #
+                      </th>
+                      {result.headers.map((h, i) => (
+                        <th key={`${h}-${i}`} className="px-2.5 py-2 font-semibold whitespace-nowrap">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {previewCleanedRows.map((row, rowIdx) => (
+                      <tr key={rowIdx} className="hover:bg-emerald-50/30">
+                        <td className="px-2.5 py-1.5 text-right text-slate-400 border-r border-slate-200 tabular-nums">
+                          {rowIdx + 1}
+                        </td>
+                        {result.headers.map((_, cIdx) => {
+                          const val = row[cIdx] ?? '';
+                          return (
+                            <td
+                              key={cIdx}
+                              title={val}
+                              className="max-w-[180px] truncate px-2.5 py-1.5 text-slate-800 whitespace-pre"
+                            >
+                              {val === '' ? <span className="italic text-slate-400">empty</span> : val}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab content: Cleaned Output */}
         {activeTab === 'cleaned' && (
-          <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+          <div className="glass-table-wrap mt-4 overflow-x-auto rounded-xl">
             {previewCleanedRows.length === 0 ? (
               <div className="p-8 text-center text-sm text-slate-600">
                 0 data rows in cleaned output. Headers: {result.headers.join(', ')}
               </div>
             ) : (
               <table className="w-full border-collapse text-left text-xs">
-                <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                <thead className="bg-slate-50/95 text-slate-700 border-b border-slate-200">
                   <tr>
                     <th
                       scope="col"
-                      className="sticky left-0 z-10 bg-slate-50 px-3 py-2.5 font-mono font-medium text-slate-500 border-r border-slate-200 w-12 text-right"
+                      className="sticky left-0 z-10 bg-slate-50/95 px-3 py-2.5 font-mono font-medium text-slate-500 border-r border-slate-200 w-12 text-right"
                     >
                       #
                     </th>
@@ -291,7 +464,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                 <tbody className="divide-y divide-slate-100 font-mono">
                   {previewCleanedRows.map((row, rowIdx) => (
                     <tr key={rowIdx} className="hover:bg-slate-50/80">
-                      <td className="sticky left-0 z-10 bg-white px-3 py-2 text-right text-slate-400 border-r border-slate-200 tabular-nums">
+                      <td className="sticky left-0 z-10 bg-white/95 px-3 py-2 text-right text-slate-400 border-r border-slate-200 tabular-nums">
                         {rowIdx + 1}
                       </td>
                       {result.headers.map((_, colIdx) => {
@@ -326,10 +499,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   key={filterVal}
                   type="button"
                   onClick={() => setDiffFilter(filterVal)}
-                  className={`rounded-md border px-3 py-1 text-xs font-medium capitalize cursor-pointer ${
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-medium capitalize cursor-pointer ${
                     diffFilter === filterVal
-                      ? 'border-blue-700 bg-blue-50 text-blue-900'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                      ? 'border-blue-500 bg-blue-50 text-blue-900'
+                      : 'border-slate-200 bg-white/90 text-slate-600 hover:bg-white'
                   }`}
                 >
                   {filterVal === 'all' ? 'All changes' : filterVal}
@@ -338,11 +511,11 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
             </div>
 
             {filteredDiffRows.length === 0 ? (
-              <div className="rounded-lg border border-slate-200 p-8 text-center text-sm text-slate-600">
+              <div className="glass-table-wrap rounded-xl p-8 text-center text-sm text-slate-600">
                 No rows match this diff filter.
               </div>
             ) : (
-              <div className="divide-y divide-slate-200 rounded-lg border border-slate-200">
+              <div className="glass-table-wrap divide-y divide-slate-200 rounded-xl">
                 {filteredDiffRows.slice(0, 100).map((diff) => (
                   <div key={diff.originalRowNumber} className="p-3.5 text-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -351,7 +524,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                       </span>
                       <span
                         className={`font-medium ${
-                          diff.status === 'removed' ? 'text-red-700' : 'text-blue-700'
+                          diff.status === 'removed' ? 'text-rose-700' : 'text-blue-700'
                         }`}
                       >
                         {diff.status === 'removed'
@@ -374,7 +547,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                             <span className="font-semibold text-slate-700">
                               {change.columnName}:
                             </span>
-                            <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-800 line-through">
+                            <span className="rounded bg-rose-50 px-1.5 py-0.5 text-rose-800 line-through">
                               {change.before || '(empty)'}
                             </span>
                             <span aria-hidden="true" className="text-slate-400">
@@ -405,10 +578,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => setIssueRuleFilter('all')}
-                    className={`rounded border px-2.5 py-1 font-mono text-xs cursor-pointer ${
+                    className={`rounded-lg border px-2.5 py-1 font-mono text-xs cursor-pointer ${
                       issueRuleFilter === 'all'
-                        ? 'border-blue-700 bg-blue-50 text-blue-900'
-                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                        ? 'border-blue-500 bg-blue-50 text-blue-900'
+                        : 'border-slate-200 bg-white/85 text-slate-700 hover:bg-white'
                     }`}
                   >
                     all ({issues.length})
@@ -420,10 +593,10 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                         key={ruleId}
                         type="button"
                         onClick={() => setIssueRuleFilter(ruleId)}
-                        className={`rounded border px-2.5 py-1 font-mono text-xs cursor-pointer ${
+                        className={`rounded-lg border px-2.5 py-1 font-mono text-xs cursor-pointer ${
                           issueRuleFilter === ruleId
-                            ? 'border-blue-700 bg-blue-50 text-blue-900'
-                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                            ? 'border-blue-500 bg-blue-50 text-blue-900'
+                            : 'border-slate-200 bg-white/85 text-slate-700 hover:bg-white'
                         }`}
                       >
                         {ruleId} ({count})
@@ -438,9 +611,9 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                 <h3 className="font-display text-xs font-semibold text-slate-900">
                   Key-Duplicate Merges &amp; Conflicts ({merges.length})
                 </h3>
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                <div className="glass-table-wrap overflow-x-auto rounded-xl">
                   <table className="w-full border-collapse text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                    <thead className="bg-slate-50/95 text-slate-700 border-b border-slate-200">
                       <tr>
                         <th scope="col" className="px-3 py-2 font-semibold">Key</th>
                         <th scope="col" className="px-3 py-2 font-semibold">Kept Row</th>
@@ -480,14 +653,14 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
               </div>
             )}
 
-            <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <div className="glass-table-wrap overflow-x-auto rounded-xl">
               {filteredIssues.length === 0 ? (
                 <div className="p-8 text-center text-sm text-slate-600">
                   No cleaning issues or rule triggers recorded.
                 </div>
               ) : (
                 <table className="w-full border-collapse text-left text-xs">
-                  <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                  <thead className="bg-slate-50/95 text-slate-700 border-b border-slate-200">
                     <tr>
                       <th scope="col" className="px-3 py-2 font-semibold">Row</th>
                       <th scope="col" className="px-3 py-2 font-semibold">Column</th>
@@ -503,7 +676,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                         <td className="px-3 py-2 tabular-nums text-slate-500">#{item.row}</td>
                         <td className="px-3 py-2 text-slate-800">{item.column}</td>
                         <td className="px-3 py-2 text-slate-700">{item.rule_id}</td>
-                        <td className="max-w-[180px] truncate px-3 py-2 text-red-800">
+                        <td className="max-w-[180px] truncate px-3 py-2 text-rose-800">
                           {item.original || '(empty)'}
                         </td>
                         <td className="max-w-[180px] truncate px-3 py-2 text-emerald-900">
@@ -515,7 +688,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                               item.severity === 'warning'
                                 ? 'text-amber-700 font-semibold'
                                 : item.severity === 'error'
-                                ? 'text-red-700 font-semibold'
+                                ? 'text-rose-700 font-semibold'
                                 : 'text-slate-600'
                             }
                           >
@@ -530,7 +703,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
             </div>
             {filteredIssues.length > 150 && (
               <p className="text-xs text-slate-500">
-                Showing first 150 of {filteredIssues.length.toLocaleString()} audit events. Use &ldquo;Download Issues CSV&rdquo; for the full reversible log.
+                Showing first 150 of {filteredIssues.length.toLocaleString()} audit events. Use &ldquo;Issues CSV&rdquo; for the full reversible log.
               </p>
             )}
           </div>
@@ -538,9 +711,9 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
 
         {activeTab === 'report' && (
           <div className="mt-4 space-y-4">
-            <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <div className="glass-table-wrap overflow-x-auto rounded-xl">
               <table className="w-full border-collapse text-left text-xs">
-                <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                <thead className="bg-slate-50/95 text-slate-700 border-b border-slate-200">
                   <tr>
                     <th scope="col" className="px-3 py-2.5 font-semibold">Order</th>
                     <th scope="col" className="px-3 py-2.5 font-semibold">Operation</th>
@@ -584,9 +757,9 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   {report.warnings.map((w, idx) => (
                     <li
                       key={`${w.code}-${idx}`}
-                      className="flex items-start gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700"
+                      className="flex items-start gap-2 rounded-xl border border-slate-200/80 bg-white/85 px-3 py-2 text-slate-700"
                     >
-                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
+                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-600" aria-hidden="true" />
                       <span>{w.message}</span>
                     </li>
                   ))}

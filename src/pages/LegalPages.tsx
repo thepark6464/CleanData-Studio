@@ -8,8 +8,8 @@ interface LegalPageProps {
 
 const PolicyMetaHeader: React.FC<{ eyebrow: string; title: string }> = ({ eyebrow, title }) => (
   <header className="space-y-2">
-    <p className="text-xs font-medium text-blue-800">{eyebrow}</p>
-    <h1 className="font-display text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl [text-wrap:balance]">
+    <p className="text-xs font-semibold text-blue-700">{eyebrow}</p>
+    <h1 className="font-display text-3xl font-bold tracking-tight hero-heading-gradient sm:text-4xl [text-wrap:balance]">
       {title}
     </h1>
     <p className="text-xs text-slate-600">
@@ -18,7 +18,7 @@ const PolicyMetaHeader: React.FC<{ eyebrow: string; title: string }> = ({ eyebro
       Operated by <strong className="font-semibold text-slate-900">{MERCHANT_INFO.legalName}</strong>{' '}
       (<a
         href={MERCHANT_INFO.websiteUrl}
-        className="font-mono text-blue-800 hover:underline"
+        className="font-mono text-blue-700 hover:underline"
       >
         {MERCHANT_INFO.websiteHost}
       </a>
@@ -28,7 +28,7 @@ const PolicyMetaHeader: React.FC<{ eyebrow: string; title: string }> = ({ eyebro
 );
 
 const PolicyContactBlock: React.FC<{ onNavigate?: (to: AppRoute) => void }> = ({ onNavigate }) => (
-  <section className="space-y-2 border-t border-slate-100 pt-5">
+  <section className="space-y-2 border-t border-slate-200/70 pt-5">
     <h2 className="font-display text-base font-semibold text-slate-950">
       Operator &amp; Website Details
     </h2>
@@ -39,7 +39,7 @@ const PolicyContactBlock: React.FC<{ onNavigate?: (to: AppRoute) => void }> = ({
     <ul className="list-disc pl-5 space-y-1">
       <li>
         Website:{' '}
-        <a href={MERCHANT_INFO.websiteUrl} className="font-mono text-xs text-blue-800 hover:underline">
+        <a href={MERCHANT_INFO.websiteUrl} className="font-mono text-xs text-blue-700 hover:underline">
           {MERCHANT_INFO.websiteUrl}
         </a>
         {onNavigate && (
@@ -48,7 +48,7 @@ const PolicyContactBlock: React.FC<{ onNavigate?: (to: AppRoute) => void }> = ({
             <AppLink
               to="/contact"
               onNavigate={onNavigate}
-              className="font-medium text-blue-800 hover:underline"
+              className="font-medium text-blue-700 hover:underline"
             >
               View Contact Us page
             </AppLink>
@@ -64,7 +64,7 @@ export const PrivacyPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
     <div className="mx-auto max-w-3xl space-y-8 px-4 py-10 sm:px-6 sm:py-14">
       <PolicyMetaHeader eyebrow="Privacy & Data Handling" title="Privacy Policy" />
 
-      <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 text-sm leading-relaxed text-slate-700">
+      <div className="glass-surface-elevated space-y-6 rounded-3xl p-6 sm:p-8 text-sm leading-relaxed text-slate-700">
         <section className="space-y-2">
           <h2 className="font-display text-base font-semibold text-slate-950">
             1. Scope &amp; Operator
@@ -149,7 +149,7 @@ export const PrivacyPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
                 <AppLink
                   to="/dashboard/settings"
                   onNavigate={onNavigate}
-                  className="font-medium text-blue-800 hover:underline"
+                  className="font-medium text-blue-700 hover:underline"
                 >
                   Dashboard → Settings
                 </AppLink>
@@ -185,7 +185,7 @@ export const TermsPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
     <div className="mx-auto max-w-3xl space-y-8 px-4 py-10 sm:px-6 sm:py-14">
       <PolicyMetaHeader eyebrow="Service Terms" title="Terms & Conditions" />
 
-      <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 text-sm leading-relaxed text-slate-700">
+      <div className="glass-surface-elevated space-y-6 rounded-3xl p-6 sm:p-8 text-sm leading-relaxed text-slate-700">
         <section className="space-y-2">
           <h2 className="font-display text-base font-semibold text-slate-950">
             1. Acceptance of Terms
@@ -271,7 +271,7 @@ export const TermsPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
               <AppLink
                 to="/refund-policy"
                 onNavigate={onNavigate}
-                className="font-medium text-blue-800 hover:underline"
+                className="font-medium text-blue-700 hover:underline"
               >
                 Refund &amp; Cancellation Policy
               </AppLink>
@@ -310,7 +310,7 @@ export const RefundPolicyPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
         title="Refund & Cancellation Policy"
       />
 
-      <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 text-sm leading-relaxed text-slate-700">
+      <div className="glass-surface-elevated space-y-6 rounded-3xl p-6 sm:p-8 text-sm leading-relaxed text-slate-700">
         <section className="space-y-2">
           <h2 className="font-display text-base font-semibold text-slate-950">
             1. Overview
@@ -335,7 +335,7 @@ export const RefundPolicyPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
                 <AppLink
                   to="/dashboard/billing"
                   onNavigate={onNavigate}
-                  className="font-medium text-blue-800 hover:underline"
+                  className="font-medium text-blue-700 hover:underline"
                 >
                   Dashboard → Credits &amp; Billing
                 </AppLink>
@@ -418,7 +418,7 @@ export const RefundPolicyPage: React.FC<LegalPageProps> = ({ onNavigate }) => {
               <AppLink
                 to="/dashboard/billing"
                 onNavigate={onNavigate}
-                className="font-medium text-blue-800 hover:underline"
+                className="font-medium text-blue-700 hover:underline"
               >
                 Dashboard → Credits &amp; Billing
               </AppLink>

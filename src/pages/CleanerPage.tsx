@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Download,
   ListChecks,
+  Loader2,
   Server,
   ShieldCheck,
 } from 'lucide-react';
@@ -17,6 +18,7 @@ import {
   CsvParseError,
   type DatasetInspection,
   exportIssuesToCsv,
+  inspectParsedTable,
   parseCsvBuffer,
   parseXlsxBuffer,
   runCleaningPipeline,
@@ -43,9 +45,9 @@ interface CleanerPageProps {
 
 const CLEANER_STEPS = [
   { id: 1, label: 'Upload File' },
-  { id: 2, label: 'Inspect & Detect' },
+  { id: 2, label: 'Inspect & Edit' },
   { id: 3, label: 'Configure Rules' },
-  { id: 4, label: 'Review & Export' },
+  { id: 4, label: 'Compare & Export' },
 ];
 
 export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
@@ -59,12 +61,15 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
     format: 'csv' | 'xlsx';
   } | null>(null);
   const [inspection, setInspection] = useState<DatasetInspection | null>(null);
+  const [historyPast, setHistoryPast] = useState<string[][][]>([]);
+  const [historyFuture, setHistoryFuture] = useState<string[][][]>([]);
   const [operations, setOperations] = useState<CleaningOperationConfig[]>([]);
   const [formulaProtection, setFormulaProtection] = useState<boolean>(
     preferences.formulaProtection,
   );
   const [includeCleaningFlags, setIncludeCleaningFlags] = useState<boolean>(false);
   const [cleaningResult, setCleaningResult] = useState<CleaningResult | null>(null);
+  const [isBrowserCleaning, setIsBrowserCleaning] = useState<boolean>(false);
 
   // Server processing state (Phase 3)
   const [serverOutputFormat, setServerOutputFormat] = useState<'csv' | 'xlsx'>('csv');
@@ -103,12 +108,82 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
     const defaultOps = buildDefaultOperations(inspected, preferences);
     setRawFile({ fileObj, buffer, name: filename, format });
     setInspection(inspected);
+    setHistoryPast([]);
+    setHistoryFuture([]);
     setOperations(defaultOps);
     setFormulaProtection(preferences.formulaProtection);
     setCleaningResult(null);
     setServerJob(null);
     setServerReport(null);
     setStep(2);
+  };
+
+  const rebuildInspectionWithRows = (nextRows: string[][]) => {
+    if (!inspection) return;
+    const rebuilt = inspectParsedTable({
+      filename: inspection.filename,
+      inputFormat: inspection.inputFormat,
+      sheetNames: inspection.sheetNames,
+      selectedSheet: inspection.selectedSheet,
+      byteSize: inspection.byteSize,
+      encoding: inspection.encoding,
+      delimiter: inspection.delimiter,
+      headers: inspection.headers,
+      originalHeaders: inspection.originalHeaders,
+      normalizedHeadersCount: inspection.problems.normalizedHeadersCount,
+      rows: nextRows,
+    });
+    setInspection(rebuilt);
+    setCleaningResult(null);
+  };
+
+  const commitRowMutation = (nextRows: string[][]) => {
+    if (!inspection) return;
+    setHistoryPast((prev) => [...prev.slice(-19), inspection.rows]);
+    setHistoryFuture([]);
+    rebuildInspectionWithRows(nextRows);
+  };
+
+  const handleEditCell = (rowIndex: number, colIndex: number, nextValue: string) => {
+    if (!inspection) return;
+    const nextRows = inspection.rows.map((row, rIdx) =>
+      rIdx === rowIndex
+        ? row.map((cell, cIdx) => (cIdx === colIndex ? nextValue : cell))
+        : row,
+    );
+    commitRowMutation(nextRows);
+  };
+
+  const handleDeleteRows = (rowIndices: number[]) => {
+    if (!inspection || rowIndices.length === 0) return;
+    const toDelete = new Set(rowIndices);
+    const nextRows = inspection.rows.filter((_, idx) => !toDelete.has(idx));
+    commitRowMutation(nextRows);
+  };
+
+  const handleTrimSelectedRows = (rowIndices: number[]) => {
+    if (!inspection || rowIndices.length === 0) return;
+    const toTrim = new Set(rowIndices);
+    const nextRows = inspection.rows.map((row, idx) =>
+      toTrim.has(idx) ? row.map((cell) => cell.trim()) : row,
+    );
+    commitRowMutation(nextRows);
+  };
+
+  const handleUndo = () => {
+    if (!inspection || historyPast.length === 0) return;
+    const previous = historyPast[historyPast.length - 1];
+    setHistoryPast((prev) => prev.slice(0, -1));
+    setHistoryFuture((prev) => [inspection.rows, ...prev]);
+    rebuildInspectionWithRows(previous);
+  };
+
+  const handleRedo = () => {
+    if (!inspection || historyFuture.length === 0) return;
+    const next = historyFuture[0];
+    setHistoryFuture((prev) => prev.slice(1));
+    setHistoryPast((prev) => [...prev, inspection.rows]);
+    rebuildInspectionWithRows(next);
   };
 
   const processBuffer = async (
@@ -225,6 +300,8 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
         const defaultOps = buildDefaultOperations(placeholderInspection, preferences);
         setRawFile({ fileObj: file, buffer: new ArrayBuffer(0), name: file.name, format: uploaded.input_format });
         setInspection(placeholderInspection);
+        setHistoryPast([]);
+        setHistoryFuture([]);
         setOperations(defaultOps);
         setStep(3);
         return;
@@ -321,14 +398,18 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
       return;
     }
 
-    const result = runCleaningPipeline(inspection, operations, {
-      formulaProtection,
-      includeCleaningFlags,
+    setIsBrowserCleaning(true);
+    window.requestAnimationFrame(() => {
+      const result = runCleaningPipeline(inspection, operations, {
+        formulaProtection,
+        includeCleaningFlags,
+      });
+      setServerJob(null);
+      setServerReport(null);
+      setCleaningResult(result);
+      setIsBrowserCleaning(false);
+      setStep(4);
     });
-    setServerJob(null);
-    setServerReport(null);
-    setCleaningResult(result);
-    setStep(4);
   };
 
   const handleFormulaProtectionChange = (enabled: boolean) => {
@@ -360,63 +441,65 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
     : 3;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-4 py-8 sm:px-6 sm:py-10">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">
-            CleanData Studio Workbench
-          </h1>
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-600">
-            {processingMode === 'browser' ? (
-              <>
-                <ShieldCheck className="h-3.5 w-3.5 text-emerald-700 shrink-0" aria-hidden="true" />
-                <span>
-                  Browser Local Path (up to 5 MB) · Data stays on your device and is never sent to a server.
-                </span>
-              </>
-            ) : (
-              <>
-                <Server className="h-3.5 w-3.5 text-blue-700 shrink-0" aria-hidden="true" />
-                <span>
-                  Server API Path (FastAPI + Pandas) · Files are transmitted to{' '}
-                  <code className="font-mono">{apiBaseUrl || 'VITE_API_BASE_URL (not set)'}</code>.
-                </span>
-              </>
-            )}
-          </p>
-        </div>
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 sm:py-10">
+      <div className="glass-surface rounded-2xl p-5 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="font-display text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">
+              CleanData Studio Workbench
+            </h1>
+            <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-600">
+              {processingMode === 'browser' ? (
+                <>
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+                  <span>
+                    Browser Local Path (up to 5 MB) · Data stays on your device and is never sent to a server.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Server className="h-3.5 w-3.5 text-blue-600 shrink-0" aria-hidden="true" />
+                  <span>
+                    Server API Path (FastAPI + Pandas) · Files are transmitted to{' '}
+                    <code className="font-mono">{apiBaseUrl || 'VITE_API_BASE_URL (not set)'}</code>.
+                  </span>
+                </>
+              )}
+            </p>
+          </div>
 
-        {/* Processing Mode Segmented Toggle */}
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
-          <div className="inline-flex rounded-lg bg-slate-200/70 p-1" role="group" aria-label="Processing path">
-            <button
-              type="button"
-              onClick={() => setProcessingMode('browser')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                processingMode === 'browser'
-                  ? 'bg-white text-slate-950 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Browser Local (≤5 MB)
-            </button>
-            <button
-              type="button"
-              onClick={() => setProcessingMode('server')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                processingMode === 'server'
-                  ? 'bg-white text-slate-950 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Server API (FastAPI)
-            </button>
+          {/* Processing Mode Segmented Toggle */}
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <div className="glass-segmented inline-flex rounded-xl p-1" role="group" aria-label="Processing path">
+              <button
+                type="button"
+                onClick={() => setProcessingMode('browser')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                  processingMode === 'browser'
+                    ? 'bg-white text-slate-950 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-950'
+                }`}
+              >
+                Browser Local (≤5 MB)
+              </button>
+              <button
+                type="button"
+                onClick={() => setProcessingMode('server')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                  processingMode === 'server'
+                    ? 'bg-white text-slate-950 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-950'
+                }`}
+              >
+                Server API (FastAPI)
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
       {processingMode === 'server' && !apiBaseUrl && (
-        <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-950">
+        <div className="flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50/90 p-4 text-xs text-amber-950 backdrop-blur-sm">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
           <div>
             <strong>Server API endpoint not configured:</strong> Set{' '}
@@ -428,12 +511,12 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
       {error && step !== 1 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900"
+          className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-sm text-rose-950 backdrop-blur-sm"
         >
-          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-700" aria-hidden="true" />
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-600" aria-hidden="true" />
           <div className="space-y-1">
             <p className="font-semibold">{error.title}</p>
-            {error.details && <p className="text-red-800">{error.details}</p>}
+            {error.details && <p className="text-rose-800">{error.details}</p>}
           </div>
         </div>
       )}
@@ -450,6 +533,17 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
           }
         }}
       />
+
+      {(isBrowserCleaning || isServerSubmitting) && (
+        <div className="glass-surface flex items-center gap-3 rounded-2xl px-5 py-4 text-xs font-medium text-blue-950">
+          <Loader2 className="h-4 w-4 animate-spin text-blue-600" aria-hidden="true" />
+          <span>
+            {isServerSubmitting
+              ? 'Submitting dataset to FastAPI cleaning pipeline...'
+              : 'Executing deterministic cleaning rules and scoring dataset...'}
+          </span>
+        </div>
+      )}
 
       {step === 1 && (
         <DropzonePanel
@@ -482,12 +576,19 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
             inspection={inspection}
             onDelimiterOverride={handleDelimiterOverride}
             onSheetChange={handleSheetChange}
+            onEditCell={handleEditCell}
+            onDeleteRows={handleDeleteRows}
+            onTrimSelectedRows={handleTrimSelectedRows}
+            canUndo={historyPast.length > 0}
+            canRedo={historyFuture.length > 0}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
           />
           <div className="flex items-center justify-between gap-4">
             <button
               type="button"
               onClick={() => setStep(1)}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium cursor-pointer"
             >
               <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               <span>Change File</span>
@@ -495,7 +596,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
             <button
               type="button"
               onClick={() => setStep(3)}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-blue-700 px-5 py-2 text-xs font-medium text-white hover:bg-blue-800 cursor-pointer"
+              className="glass-btn-primary inline-flex min-h-[42px] items-center gap-2 rounded-xl px-5 py-2 text-xs font-semibold cursor-pointer"
             >
               <span>Configure Cleaning Rules</span>
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
@@ -507,9 +608,9 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
       {step === 3 && inspection && (
         <div className="space-y-4">
           {processingMode === 'server' && (
-            <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-5 py-3.5 text-xs sm:flex-row sm:items-center sm:justify-between">
+            <div className="glass-surface flex flex-col gap-3 rounded-2xl px-5 py-3.5 text-xs sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-0.5">
-                <p className="font-medium text-slate-900">
+                <p className="font-medium text-slate-950">
                   Server Export Format &amp; Credit Estimate
                 </p>
                 <p className="font-mono text-slate-600 tabular-nums">
@@ -561,14 +662,11 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
             <button
               type="button"
               onClick={() => setStep(2)}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium cursor-pointer"
             >
               <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               <span>Back to Inspection</span>
             </button>
-            {isServerSubmitting && (
-              <span className="text-xs text-slate-600">Running FastAPI cleaning job...</span>
-            )}
           </div>
         </div>
       )}
@@ -580,7 +678,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
             <button
               type="button"
               onClick={() => setStep(3)}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium cursor-pointer"
             >
               <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               <span>Adjust Operations</span>
@@ -591,8 +689,8 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
 
       {step === 4 && serverJob && serverReport && (
         <div className="space-y-6">
-          <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
-            <div className="flex flex-col gap-4 border-b border-slate-100 pb-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="glass-surface rounded-2xl p-6 space-y-5">
+            <div className="flex flex-col gap-4 border-b border-slate-200/70 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="font-display text-lg font-semibold text-slate-950">
                   Server Job Completed ({serverJob.job_id})
@@ -617,7 +715,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
                       document.body.removeChild(link);
                       URL.revokeObjectURL(url);
                     }}
-                    className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
+                    className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <ListChecks className="h-4 w-4" aria-hidden="true" />
                     <span>Download Issues CSV ({serverReport.issues.length})</span>
@@ -627,7 +725,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
                   <a
                     href={serverJob.download_url}
                     download
-                    className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap shrink-0"
+                    className="glass-btn-primary inline-flex min-h-[40px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap shrink-0"
                   >
                     <Download className="h-4 w-4" aria-hidden="true" />
                     <span>Download Cleaned {serverJob.output_format.toUpperCase()} (Signed URL)</span>
@@ -653,9 +751,9 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
                 {serverReport.warnings.map((w, i) => (
                   <li
                     key={`${w.code}-${i}`}
-                    className="flex items-start gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700"
+                    className="flex items-start gap-2 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2 text-slate-700"
                   >
-                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
+                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-600" aria-hidden="true" />
                     <span>{w.message}</span>
                   </li>
                 ))}
@@ -666,7 +764,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
           <button
             type="button"
             onClick={() => setStep(3)}
-            className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+            className="glass-btn-secondary inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-medium cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />
             <span>Back to Operations</span>

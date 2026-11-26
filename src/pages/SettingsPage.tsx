@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
-  ArrowLeft,
   CheckCircle2,
   Eye,
   EyeOff,
@@ -11,6 +10,7 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
+import { DashboardShell } from '../components/DashboardShell';
 import { CleanDataApiClient, CleanDataApiError, getApiBaseUrl } from '../lib/api/client';
 import { useAuth, type UserPreferences } from '../lib/auth/AuthContext';
 import type { SupportedPhoneRegion } from '../lib/cleaner/types';
@@ -91,7 +91,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
   if (!isConfigured) {
     return (
       <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
-        <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-3">
+        <div className="glass-surface-elevated rounded-3xl p-6 sm:p-8 space-y-3">
           <h1 className="font-display text-xl font-bold text-slate-950">
             Account Settings Unavailable Without Supabase Auth
           </h1>
@@ -107,8 +107,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
 
   if (isLoading || !user) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
-        <div className="h-40 animate-pulse rounded-xl bg-slate-200" />
+      <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
+        <div className="h-40 animate-pulse rounded-3xl bg-white/70" />
       </div>
     );
   }
@@ -228,30 +228,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8 px-4 py-8 sm:px-6 sm:py-10">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-950">
-            Account &amp; Cleaning Preferences
-          </h1>
-          <p className="mt-1 text-xs text-slate-600">
-            Manage profile details, default regional rules, and data retention controls.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => onNavigate('/dashboard')}
-          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer self-start"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>Back to Dashboard</span>
-        </button>
-      </div>
-
+    <DashboardShell
+      currentRoute="/dashboard/settings"
+      onNavigate={onNavigate}
+      title="Account & Cleaning Preferences"
+      subtitle="Manage profile details, default regional rules, password security, and data retention controls."
+    >
       {error && (
         <div
           role="alert"
-          className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-900"
+          className="flex items-start gap-2.5 rounded-2xl border border-red-200 bg-red-50/95 p-4 text-xs text-red-900"
         >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700" aria-hidden="true" />
           <span>{error}</span>
@@ -259,7 +245,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
       )}
 
       {/* Authentication & Session Status */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
+      <section className="glass-surface rounded-3xl p-6 space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -279,7 +265,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               type="button"
               onClick={() => void handleVerifyBackendSession()}
               disabled={verifyingBackend}
-              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+              className="glass-btn-secondary inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50"
             >
               <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{verifyingBackend ? 'Verifying...' : 'Verify FastAPI Session'}</span>
@@ -287,7 +273,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
             <button
               type="button"
               onClick={() => void signOut().then(() => onNavigate('/auth'))}
-              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              className="glass-btn-secondary inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium cursor-pointer"
             >
               <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Sign Out</span>
@@ -298,10 +284,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
         {backendStatusMessage && (
           <div
             role="status"
-            className={`rounded-lg border px-3 py-2 text-xs ${
+            className={`rounded-xl border px-3.5 py-2.5 text-xs ${
               backendStatusOk
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                : 'border-red-200 bg-red-50 text-red-900'
+                ? 'border-emerald-200 bg-emerald-50/90 text-emerald-900'
+                : 'border-red-200 bg-red-50/90 text-red-900'
             }`}
           >
             {backendStatusMessage}
@@ -312,7 +298,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
       {/* Profile Section */}
       <form
         onSubmit={(e) => void handleSaveProfile(e)}
-        className="rounded-xl border border-slate-200 bg-white p-6 space-y-4"
+        className="glass-surface rounded-3xl p-6 space-y-4"
       >
         <h2 className="font-display text-base font-semibold text-slate-950">Profile</h2>
 
@@ -326,7 +312,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               type="text"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="glass-input w-full rounded-xl px-3.5 py-2.5 text-sm"
             />
           </div>
           <div className="space-y-1.5">
@@ -338,7 +324,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               type="text"
               readOnly
               value={user.email ?? ''}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-2.5 font-mono text-xs text-slate-600"
             />
           </div>
         </div>
@@ -355,7 +341,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
           <button
             type="submit"
             disabled={savingProfile}
-            className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-800 cursor-pointer disabled:opacity-50"
+            className="glass-btn-primary inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-4 py-1.5 text-xs font-semibold cursor-pointer disabled:opacity-50"
           >
             <Save className="h-3.5 w-3.5" aria-hidden="true" />
             <span>{savingProfile ? 'Saving...' : 'Save Profile'}</span>
@@ -366,7 +352,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
       {/* Change Password */}
       <form
         onSubmit={(e) => void handleUpdatePassword(e)}
-        className="rounded-xl border border-slate-200 bg-white p-6 space-y-4"
+        className="glass-surface rounded-3xl p-6 space-y-4"
       >
         <div>
           <h2 className="font-display text-base font-semibold text-slate-950">Change Password</h2>
@@ -389,7 +375,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
                 minLength={8}
                 autoComplete="new-password"
                 placeholder="At least 8 characters"
-                className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                className="glass-input w-full rounded-xl py-2.5 pl-3.5 pr-9 text-sm"
               />
               <button
                 type="button"
@@ -422,7 +408,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
                 minLength={8}
                 autoComplete="new-password"
                 placeholder="Re-enter new password"
-                className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                className="glass-input w-full rounded-xl py-2.5 pl-3.5 pr-9 text-sm"
               />
               <button
                 type="button"
@@ -454,7 +440,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
           <button
             type="submit"
             disabled={savingPassword}
-            className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+            className="glass-btn-secondary inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-4 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50"
           >
             <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
             <span>{savingPassword ? 'Updating...' : 'Update Password'}</span>
@@ -465,7 +451,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
       {/* Default Cleaning Preferences */}
       <form
         onSubmit={(e) => void handleSavePreferences(e)}
-        className="rounded-xl border border-slate-200 bg-white p-6 space-y-5"
+        className="glass-surface rounded-3xl p-6 space-y-5"
       >
         <div>
           <h2 className="font-display text-base font-semibold text-slate-950">
@@ -488,7 +474,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               onChange={(e) =>
                 setPrefs((prev) => ({ ...prev, dayFirst: e.target.value === 'dayFirst' }))
               }
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="glass-input w-full rounded-xl px-3 py-2 text-xs"
             >
               <option value="dayFirst">DD/MM (Day-first — India/EU)</option>
               <option value="monthFirst">MM/DD (Month-first — US)</option>
@@ -508,7 +494,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
                   dateFormat: e.target.value as UserPreferences['dateFormat'],
                 }))
               }
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="glass-input w-full rounded-xl px-3 py-2 font-mono text-xs"
             >
               <option value="YYYY-MM-DD">YYYY-MM-DD (ISO-8601)</option>
               <option value="DD/MM/YYYY">DD/MM/YYYY</option>
@@ -526,7 +512,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               onChange={(e) =>
                 setPrefs((prev) => ({ ...prev, phoneRegion: e.target.value as SupportedPhoneRegion }))
               }
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="glass-input w-full rounded-xl px-3 py-2 text-xs"
             >
               {PHONE_REGIONS.map((r) => (
                 <option key={r.value} value={r.value}>
@@ -566,7 +552,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
           <button
             type="submit"
             disabled={savingPrefs}
-            className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-800 cursor-pointer disabled:opacity-50"
+            className="glass-btn-primary inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-4 py-1.5 text-xs font-semibold cursor-pointer disabled:opacity-50"
           >
             <Save className="h-3.5 w-3.5" aria-hidden="true" />
             <span>{savingPrefs ? 'Saving...' : 'Save Preferences'}</span>
@@ -577,7 +563,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
       {/* Account & Data Deletion Request */}
       <form
         onSubmit={(e) => void handleRequestDeletion(e)}
-        className="rounded-xl border border-red-200 bg-white p-6 space-y-4"
+        className="rounded-3xl border border-red-200/90 bg-white/80 backdrop-blur-md p-6 space-y-4 shadow-sm"
       >
         <div className="space-y-1">
           <h2 className="font-display text-base font-semibold text-red-900">
@@ -591,7 +577,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
         </div>
 
         {profile?.deletion_requested_at && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+          <div className="rounded-xl border border-amber-200 bg-amber-50/90 p-3 text-xs text-amber-950">
             Deletion already requested on{' '}
             <span className="font-mono">
               {new Date(profile.deletion_requested_at).toLocaleString()}
@@ -601,7 +587,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
         )}
 
         {deleteNotice && (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/90 p-3 text-xs text-emerald-950">
             {deleteNotice}
           </div>
         )}
@@ -617,7 +603,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               value={deleteReason}
               onChange={(e) => setDeleteReason(e.target.value)}
               placeholder="Completed project"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600"
+              className="glass-input w-full rounded-xl px-3.5 py-2 text-xs"
             />
           </div>
           <div className="space-y-1.5">
@@ -630,7 +616,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
               value={deleteConfirmText}
               onChange={(e) => setDeleteConfirmText(e.target.value)}
               placeholder="DELETE"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600"
+              className="glass-input w-full rounded-xl px-3.5 py-2 font-mono text-xs"
             />
           </div>
         </div>
@@ -638,12 +624,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNavigate }) => {
         <button
           type="submit"
           disabled={deleting}
-          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-4 py-1.5 text-xs font-medium text-red-800 hover:bg-red-100 cursor-pointer disabled:opacity-50"
+          className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-red-300 bg-red-50 px-4 py-1.5 text-xs font-medium text-red-800 hover:bg-red-100 cursor-pointer disabled:opacity-50"
         >
           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           <span>{deleting ? 'Submitting...' : 'Request Account Deletion'}</span>
         </button>
       </form>
-    </div>
+    </DashboardShell>
   );
 };

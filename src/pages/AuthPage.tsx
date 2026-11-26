@@ -182,7 +182,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
   if (!isConfigured) {
     return (
       <div className="mx-auto max-w-xl px-4 py-14 sm:px-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-4">
+        <div className="glass-surface-elevated rounded-3xl p-6 sm:p-8 space-y-4">
           <div className="flex items-start gap-3">
             <WarningCircle size={20} weight="fill" className="mt-0.5 shrink-0 text-amber-700" aria-hidden="true" />
             <div className="space-y-1.5">
@@ -192,15 +192,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
               <p className="body-6 text-slate-600">
                 Browser cleaning works immediately without an account. To enable user sign-in,
                 server job history, and saved cleaning preferences, configure{' '}
-                <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded">
+                <code className="font-mono text-xs bg-white/80 px-1.5 py-0.5 rounded border border-slate-200/80">
                   VITE_SUPABASE_URL
                 </code>{' '}
                 and{' '}
-                <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded">
+                <code className="font-mono text-xs bg-white/80 px-1.5 py-0.5 rounded border border-slate-200/80">
                   VITE_SUPABASE_ANON_KEY
                 </code>{' '}
                 in your environment and apply the SQL migrations in{' '}
-                <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded">
+                <code className="font-mono text-xs bg-white/80 px-1.5 py-0.5 rounded border border-slate-200/80">
                   supabase/migrations/
                 </code>
                 .
@@ -212,7 +212,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
             <button
               type="button"
               onClick={() => onNavigate('/cleaner')}
-              className="button-sm inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-white hover:bg-slate-800 cursor-pointer"
+              className="glass-btn-primary button-sm inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 cursor-pointer"
             >
               <span>Use Browser Local Cleaner</span>
               <ArrowRight size={16} weight="bold" aria-hidden="true" />
@@ -227,9 +227,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
   if (isPasswordRecovery) {
     return (
       <div className="mx-auto max-w-md px-4 py-12 sm:px-6 sm:py-16">
-        <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+        <div className="glass-surface-elevated space-y-6 rounded-3xl p-6 sm:p-8">
           <div className="space-y-1">
-            <p className="caption-3 text-blue-800">Password recovery</p>
+            <p className="caption-3 text-blue-700">Password recovery</p>
             <h1 className="heading-5 text-slate-950">Set a new password</h1>
             <p className="caption-5 text-slate-600">
               Enter and confirm your new password for{' '}
@@ -240,7 +240,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
           {error && (
             <div
               role="alert"
-              className="flex items-start gap-2.5 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-900"
+              className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50/90 p-3 text-xs text-red-900"
             >
               <WarningCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-red-700" aria-hidden="true" />
               <span>{error}</span>
@@ -248,7 +248,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
           )}
 
           {notice && (
-            <div className="flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+            <div className="flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50/90 p-3 text-xs text-emerald-950">
               <CheckCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-emerald-700" aria-hidden="true" />
               <span>{notice}</span>
             </div>
@@ -269,7 +269,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="Minimum 8 characters"
-                  className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-10 text-sm text-slate-950 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+                  className="glass-input w-full rounded-xl py-2.5 pl-3.5 pr-10 text-sm placeholder:text-slate-400"
                 />
                 <button
                   type="button"
@@ -295,14 +295,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
                 value={confirmNewPassword}
                 onChange={(e) => setConfirmNewPassword(e.target.value)}
                 placeholder="Re-enter your new password"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+                className="glass-input w-full rounded-xl px-3.5 py-2.5 text-sm placeholder:text-slate-400"
               />
             </div>
 
             <button
               type="submit"
               disabled={submitting}
-              className="button-sm inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-white transition-colors hover:bg-slate-800 active:scale-[0.98] disabled:opacity-60 cursor-pointer"
+              className="glass-btn-primary button-sm inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2 disabled:opacity-60 cursor-pointer"
             >
               <Key size={16} weight="bold" aria-hidden="true" />
               <span>{submitting ? 'Updating password...' : 'Update Password'}</span>
@@ -316,7 +316,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
   if (!isLoading && user) {
     return (
       <div className="mx-auto max-w-xl px-4 py-14 sm:px-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-5">
+        <div className="glass-surface-elevated rounded-3xl p-6 sm:p-8 space-y-5">
           <div className="flex items-start gap-3">
             <CheckCircle size={22} weight="fill" className="mt-0.5 shrink-0 text-emerald-700" aria-hidden="true" />
             <div className="space-y-1">
@@ -335,7 +335,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
             <button
               type="button"
               onClick={() => onNavigate('/dashboard')}
-              className="button-sm inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-white hover:bg-slate-800 cursor-pointer"
+              className="glass-btn-primary button-sm inline-flex min-h-[42px] items-center gap-2 rounded-xl px-4 py-2 cursor-pointer"
             >
               <span>Go to Dashboard</span>
               <ArrowRight size={16} weight="bold" aria-hidden="true" />
@@ -343,21 +343,21 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
             <button
               type="button"
               onClick={() => onNavigate('/dashboard/settings')}
-              className="button-sm inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-800 hover:bg-slate-50 cursor-pointer"
+              className="glass-btn-secondary button-sm inline-flex min-h-[42px] items-center gap-2 rounded-xl px-3.5 py-2 cursor-pointer"
             >
               <span>Account Settings</span>
             </button>
             <button
               type="button"
               onClick={() => onNavigate('/cleaner')}
-              className="button-sm inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-800 hover:bg-slate-50 cursor-pointer"
+              className="glass-btn-secondary button-sm inline-flex min-h-[42px] items-center gap-2 rounded-xl px-3.5 py-2 cursor-pointer"
             >
               <span>Open Cleaner Workbench</span>
             </button>
             <button
               type="button"
               onClick={() => void signOut()}
-              className="button-sm inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800 hover:bg-red-100 cursor-pointer"
+              className="button-sm inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-red-200 bg-red-50/90 px-3.5 py-2 text-red-800 hover:bg-red-100 cursor-pointer"
             >
               <SignOut size={15} weight="bold" aria-hidden="true" />
               <span>Sign Out</span>
@@ -370,8 +370,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
 
   return (
     <div className="mx-auto max-w-md px-4 py-12 sm:px-6 sm:py-16">
-      <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+      <div className="glass-surface-elevated space-y-6 rounded-3xl p-6 sm:p-8">
         <div className="space-y-1">
+          <p className="caption-3 text-blue-700">CleanData Account</p>
           <h1 className="heading-5 text-slate-950">
             {mode === 'signin'
               ? 'Sign in to CleanData'
@@ -387,7 +388,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
         <div
           role="tablist"
           aria-label="Authentication mode"
-          className="grid grid-cols-3 rounded-lg bg-slate-100 p-1 caption-4"
+          className="glass-segmented grid grid-cols-3 rounded-xl p-1 caption-4"
         >
           <button
             type="button"
@@ -398,7 +399,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
               setError(null);
               setNotice(null);
             }}
-            className={`rounded-md py-1.5 transition-colors cursor-pointer ${
+            className={`rounded-lg py-2 transition-all cursor-pointer ${
               mode === 'signin'
                 ? 'bg-white text-slate-950 shadow-sm'
                 : 'text-slate-600 hover:text-slate-950'
@@ -415,7 +416,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
               setError(null);
               setNotice(null);
             }}
-            className={`rounded-md py-1.5 transition-colors cursor-pointer ${
+            className={`rounded-lg py-2 transition-all cursor-pointer ${
               mode === 'signup'
                 ? 'bg-white text-slate-950 shadow-sm'
                 : 'text-slate-600 hover:text-slate-950'
@@ -432,7 +433,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
               setError(null);
               setNotice(null);
             }}
-            className={`rounded-md py-1.5 transition-colors cursor-pointer ${
+            className={`rounded-lg py-2 transition-all cursor-pointer ${
               mode === 'reset'
                 ? 'bg-white text-slate-950 shadow-sm'
                 : 'text-slate-600 hover:text-slate-950'
@@ -445,7 +446,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
         {error && (
           <div
             role="alert"
-            className="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-900"
+            className="space-y-2 rounded-xl border border-red-200 bg-red-50/90 p-3 text-xs text-red-900"
           >
             <div className="flex items-start gap-2.5">
               <WarningCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-red-700" aria-hidden="true" />
@@ -465,7 +466,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
         )}
 
         {notice && (
-          <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+          <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50/90 p-3 text-xs text-emerald-950">
             <div className="flex items-start gap-2">
               <Envelope size={16} weight="fill" className="mt-0.5 shrink-0 text-emerald-700" aria-hidden="true" />
               <span>{notice}</span>
@@ -497,7 +498,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 placeholder="Aarav Sharma"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+                className="glass-input w-full rounded-xl px-3.5 py-2.5 text-sm placeholder:text-slate-400"
               />
             </div>
           )}
@@ -514,7 +515,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@company.in"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+              className="glass-input w-full rounded-xl px-3.5 py-2.5 text-sm placeholder:text-slate-400"
             />
           </div>
 
@@ -548,7 +549,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Minimum 8 characters"
-                  className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-10 text-sm text-slate-950 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+                  className="glass-input w-full rounded-xl py-2.5 pl-3.5 pr-10 text-sm placeholder:text-slate-400"
                 />
                 <button
                   type="button"
@@ -577,7 +578,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="Re-enter password"
-                  className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-10 text-sm text-slate-950 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700"
+                  className="glass-input w-full rounded-xl py-2.5 pl-3.5 pr-10 text-sm placeholder:text-slate-400"
                 />
                 <button
                   type="button"
@@ -594,7 +595,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
           <button
             type="submit"
             disabled={submitting}
-            className="button-sm inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-white transition-colors hover:bg-slate-800 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2 disabled:opacity-60 cursor-pointer"
+            className="glass-btn-primary button-sm inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2 disabled:opacity-60 cursor-pointer"
           >
             <Key size={16} weight="bold" aria-hidden="true" />
             <span>
@@ -609,8 +610,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate }) => {
           </button>
         </form>
 
-        <p className="flex items-start gap-2 border-t border-slate-100 pt-4 caption-5 text-slate-500">
-          <ShieldCheck size={16} weight="fill" className="mt-0.5 shrink-0 text-emerald-700" aria-hidden="true" />
+        <p className="flex items-start gap-2 border-t border-slate-200/70 pt-4 caption-5 text-slate-500">
+          <ShieldCheck size={16} weight="fill" className="mt-0.5 shrink-0 text-emerald-600" aria-hidden="true" />
           <span>
             Files up to 5 MB can always be cleaned locally in your browser without signing in.
           </span>

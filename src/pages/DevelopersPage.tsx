@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, KeyRound } from 'lucide-react';
+import { ArrowRight, KeyRound, ShieldCheck, Terminal } from 'lucide-react';
 import { CodeBlock } from '../components/ui/CodeBlock';
 import { useAuth } from '../lib/auth/AuthContext';
 import type { AppRoute } from '../lib/router';
@@ -100,14 +100,17 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
 
   return (
     <div className="mx-auto max-w-6xl space-y-10 px-4 py-10 sm:px-6 sm:py-14">
-      <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+      <div className="glass-surface-elevated rounded-3xl p-6 sm:p-8 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
         <div className="max-w-2xl space-y-3">
-          <p className="text-xs font-medium text-blue-800">CleanData REST API v1</p>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl [text-wrap:balance]">
+          <p className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700">
+            <Terminal className="h-3.5 w-3.5 text-violet-600" aria-hidden="true" />
+            <span>CleanData REST API v1</span>
+          </p>
+          <h1 className="font-display text-3xl font-bold tracking-tight hero-heading-gradient sm:text-4xl [text-wrap:balance]">
             One cleaning engine behind a predictable REST API
           </h1>
           <p className="text-sm leading-relaxed text-slate-600 sm:text-base">
-            Submit CSV and XLSX files via multipart upload, apply deterministic cleaning rules with idempotency keys, and inspect structured quality reports. Authenticate with <code className="font-mono text-xs text-slate-800">Authorization: Bearer cd_live_...</code> on Pro (60 req/min) or Business (240 req/min).
+            Submit CSV and XLSX files via multipart upload, apply deterministic cleaning rules with idempotency keys, and inspect structured quality reports. Authenticate with <code className="font-mono text-xs text-slate-900 bg-white/80 px-1.5 py-0.5 rounded border border-slate-200/80">Authorization: Bearer cd_live_...</code> on Pro (60 req/min) or Business (240 req/min).
           </p>
         </div>
 
@@ -116,7 +119,7 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
             <button
               type="button"
               onClick={() => onNavigate(user ? '/dashboard/api-keys' : '/auth')}
-              className="inline-flex min-h-[42px] items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 cursor-pointer"
+              className="glass-btn-primary inline-flex min-h-[44px] items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
             >
               <KeyRound className="h-4 w-4" aria-hidden="true" />
               <span>{user ? 'Manage API Keys' : 'Sign in for API Access'}</span>
@@ -132,13 +135,13 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
           <h2 id="quickstart-heading" className="font-display text-xl font-bold text-slate-950">
             Quick Start Example
           </h2>
-          <div className="inline-flex rounded-lg bg-slate-100 p-1" role="tablist">
+          <div className="glass-segmented inline-flex rounded-xl p-1" role="tablist">
             <button
               type="button"
               role="tab"
               aria-selected={sdkTab === 'python'}
               onClick={() => setSdkTab('python')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 sdkTab === 'python'
                   ? 'bg-white text-slate-950 shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
@@ -151,7 +154,7 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
               role="tab"
               aria-selected={sdkTab === 'javascript'}
               onClick={() => setSdkTab('javascript')}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 sdkTab === 'javascript'
                   ? 'bg-white text-slate-950 shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
@@ -175,29 +178,31 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
           REST Endpoints Contract (<code className="font-mono text-base">/v1</code>)
         </h2>
 
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-          <table className="w-full border-collapse text-left text-xs">
-            <thead className="border-b border-slate-200 bg-slate-50 text-slate-700">
-              <tr>
-                <th scope="col" className="px-4 py-3 font-semibold">Method</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Endpoint</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Purpose</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {ENDPOINTS.map((ep) => (
-                <tr key={ep.path}>
-                  <td className="px-4 py-3 font-mono font-semibold text-blue-800 whitespace-nowrap">
-                    {ep.method}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-slate-900 whitespace-nowrap">
-                    {ep.path}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{ep.purpose}</td>
+        <div className="glass-surface rounded-3xl p-2">
+          <div className="glass-table-wrap overflow-x-auto rounded-2xl">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead className="border-b border-slate-200 bg-slate-50/90 text-slate-700">
+                <tr>
+                  <th scope="col" className="px-4 py-3.5 font-semibold">Method</th>
+                  <th scope="col" className="px-4 py-3.5 font-semibold">Endpoint</th>
+                  <th scope="col" className="px-4 py-3.5 font-semibold">Purpose</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {ENDPOINTS.map((ep) => (
+                  <tr key={ep.path} className="hover:bg-blue-50/35 transition-colors">
+                    <td className="px-4 py-3 font-mono font-semibold text-blue-700 whitespace-nowrap">
+                      {ep.method}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-slate-900 whitespace-nowrap">
+                      {ep.path}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{ep.purpose}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -209,13 +214,13 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <div className="space-y-2.5">
             <h3 className="text-xs font-semibold text-slate-700">
-              <code className="font-mono text-blue-800">GET /v1/credits</code> — Wallet Balances
+              <code className="font-mono text-blue-700">GET /v1/credits</code> — Wallet Balances
             </h3>
             <CodeBlock language="json" label="application/json · 200" code={CREDITS_SAMPLE_JSON} />
           </div>
           <div className="space-y-2.5">
             <h3 className="text-xs font-semibold text-slate-700">
-              <code className="font-mono text-blue-800">GET /v1/usage</code> — Rate Limit &amp; Logs
+              <code className="font-mono text-blue-700">GET /v1/usage</code> — Rate Limit &amp; Logs
             </h3>
             <CodeBlock language="json" label="application/json · 200" code={USAGE_SAMPLE_JSON} />
           </div>
@@ -231,10 +236,13 @@ export const DevelopersPage: React.FC<DevelopersPageProps> = ({ onNavigate }) =>
           <CodeBlock language="json" label="application/json · 402" code={ERROR_JSON_EXAMPLE} />
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3 text-xs text-slate-600 leading-relaxed">
-          <h2 className="font-display text-base font-semibold text-slate-950">
-            Security &amp; Ingestion Rules
-          </h2>
+        <div className="glass-surface rounded-3xl p-6 space-y-3 text-xs text-slate-600 leading-relaxed">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+            <h2 className="font-display text-base font-semibold text-slate-950">
+              Security &amp; Ingestion Rules
+            </h2>
+          </div>
           <p>
             <strong className="font-semibold text-slate-900">Uploaded Files Only (No Remote URLs):</strong>{' '}
             First-release API endpoints accept multipart file uploads only—remote dataset URL fetching is intentionally disabled to eliminate SSRF exposure.

@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { Footer } from './components/Footer';
 import { TopBar } from './components/TopBar';
+import { AuroraBackdrop } from './components/motion/AuroraBackdrop';
 import { AuthProvider, useAuth } from './lib/auth/AuthContext';
 import { useAppRouter } from './lib/router';
 import { AboutPage } from './pages/AboutPage';
@@ -42,10 +43,12 @@ function AppShell() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col overflow-x-clip bg-slate-50 text-slate-900">
+    <div className="relative flex min-h-screen flex-col overflow-x-clip text-slate-900">
+      <AuroraBackdrop />
+
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-slate-950 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-xl focus:bg-slate-950 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
       >
         Skip to content
       </a>
