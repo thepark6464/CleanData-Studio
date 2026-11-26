@@ -369,13 +369,13 @@ describe('Pricing catalog & Cashfree billing API client', () => {
     expect(recoveredProState.totalCreditsText).toBe('550');
   });
 
-  it('routes extension-less SPA paths to /index.html while preserving /api and static assets in vercel.json', () => {
+  it('routes extension-less SPA paths to /index.html (plain string destination, verified on Vercel; the {service,path} form 404s) while preserving /api and static assets in vercel.json', () => {
     const vercelConfigPath = path.resolve(__dirname, '../../vercel.json');
     const config = JSON.parse(fs.readFileSync(vercelConfigPath, 'utf-8')) as {
       services: Record<string, unknown>;
       rewrites: Array<{
         source: string;
-        destination: { service: string; path?: string };
+        destination: string | { service: string; path?: string };
       }>;
     };
 
@@ -394,9 +394,9 @@ describe('Pricing catalog & Cashfree billing API client', () => {
       return null;
     };
 
-    expect(matchRewrite('/dashboard/billing')).toEqual({ service: 'app', path: '/index.html' });
-    expect(matchRewrite('/pricing')).toEqual({ service: 'app', path: '/index.html' });
-    expect(matchRewrite('/')).toEqual({ service: 'app', path: '/index.html' });
+    expect(matchRewrite('/dashboard/billing')).toBe('/index.html');
+    expect(matchRewrite('/pricing')).toBe('/index.html');
+    expect(matchRewrite('/')).toBe('/index.html');
     expect(matchRewrite('/api')).toEqual({ service: 'backend' });
     expect(matchRewrite('/api/health')).toEqual({ service: 'backend' });
     expect(matchRewrite('/api/v1/billing/verify')).toEqual({ service: 'backend' });
