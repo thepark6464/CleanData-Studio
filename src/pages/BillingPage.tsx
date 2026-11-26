@@ -93,6 +93,51 @@ function maskRefId(ref: string | null | undefined): string {
   return `${ref.slice(0, 10)}…${ref.slice(-6)}`;
 }
 
+function parseReturnTargetFromSearch(search: string): {
+  target: {
+    kind: 'credit_pack' | 'subscription';
+    order_id?: string;
+    subscription_id?: string;
+  } | null;
+  hasReturnParams: boolean;
+} {
+  const params = new URLSearchParams(search);
+  const cleanUrlParam = (value: string | null): string | undefined => {
+    const trimmed = value?.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) return undefined;
+    return trimmed;
+  };
+
+  const orderId = cleanUrlParam(params.get('order_id') || params.get('orderId'));
+  const subscriptionId = cleanUrlParam(
+    params.get('subscription_id') || params.get('sub_id') || params.get('cf_subscriptionId'),
+  );
+  const kindParam = cleanUrlParam(params.get('kind'));
+  const hasReturnParams =
+    params.has('order_id') ||
+    params.has('orderId') ||
+    params.has('subscription_id') ||
+    params.has('sub_id') ||
+    params.has('cf_subscriptionId') ||
+    params.has('kind');
+
+  if (!orderId && !subscriptionId) {
+    return { target: null, hasReturnParams };
+  }
+
+  const kind: 'credit_pack' | 'subscription' =
+    kindParam === 'subscription' || Boolean(subscriptionId) ? 'subscription' : 'credit_pack';
+  return {
+    target: {
+      kind,
+      order_id: orderId,
+      subscription_id: subscriptionId,
+    },
+    hasReturnParams,
+  };
+}
+
 export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   const {
     isConfigured,
@@ -131,6 +176,18 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
 
   useEffect(() => {
     if (isConfigured && !isLoading && !user) {
+      if (typeof window !== 'undefined') {
+        const { target } = parseReturnTargetFromSearch(window.location.search);
+        if (target) {
+          savePendingCheckout({
+            kind: target.kind,
+            order_id: target.order_id ?? null,
+            subscription_id: target.subscription_id ?? null,
+            item_name: target.kind === 'subscription' ? 'Monthly Plan' : 'Credit Pack',
+            created_at: Date.now(),
+          });
+        }
+      }
       setIntendedRoute('/dashboard/billing');
       onNavigate('/auth');
     }
@@ -168,6 +225,9 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
         await refreshAccountData();
       } catch (err) {
         if (err instanceof CleanDataApiError) {
+          if (err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 429) {
+            clearPendingCheckout();
+          }
           setCheckoutError(`${err.code}: ${err.message}`);
         } else {
           setCheckoutError('Unable to verify Cashfree payment status with server.');
@@ -183,46 +243,19 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
   // (never grant from URL query parameters alone).
   useEffect(() => {
     if (typeof window === 'undefined' || !session?.access_token || !user) return;
-    const params = new URLSearchParams(window.location.search);
-    const cleanUrlParam = (value: string | null): string | undefined => {
-      const trimmed = value?.trim();
-      if (!trimmed) return undefined;
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) return undefined;
-      return trimmed;
-    };
-
-    const orderId = cleanUrlParam(params.get('order_id') || params.get('orderId'));
-    const subscriptionId = cleanUrlParam(
-      params.get('subscription_id') || params.get('sub_id') || params.get('cf_subscriptionId'),
+    const { target: urlTarget, hasReturnParams } = parseReturnTargetFromSearch(
+      window.location.search,
     );
-    const kindParam = cleanUrlParam(params.get('kind'));
-    const hasReturnParams =
-      params.has('order_id') ||
-      params.has('orderId') ||
-      params.has('subscription_id') ||
-      params.has('sub_id') ||
-      params.has('cf_subscriptionId') ||
-      params.has('kind');
 
-    if (hasReturnParams) {
-      // Remove query parameters immediately so page reloads do not re-trigger checks
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-
-    let target: {
-      kind: 'credit_pack' | 'subscription';
-      order_id?: string;
-      subscription_id?: string;
-    } | null = null;
-
-    if (orderId || subscriptionId) {
-      const kind: 'credit_pack' | 'subscription' =
-        kindParam === 'subscription' || Boolean(subscriptionId) ? 'subscription' : 'credit_pack';
-      target = {
-        kind,
-        order_id: orderId,
-        subscription_id: subscriptionId,
-      };
+    let target = urlTarget;
+    if (urlTarget) {
+      savePendingCheckout({
+        kind: urlTarget.kind,
+        order_id: urlTarget.order_id ?? null,
+        subscription_id: urlTarget.subscription_id ?? null,
+        item_name: urlTarget.kind === 'subscription' ? 'Monthly Plan' : 'Credit Pack',
+        created_at: Date.now(),
+      });
     } else {
       const pending = readPendingCheckout();
       if (pending && (pending.order_id || pending.subscription_id)) {
@@ -232,6 +265,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onNavigate }) => {
           subscription_id: pending.subscription_id || undefined,
         };
       }
+    }
+
+    if (hasReturnParams) {
+      // Remove query parameters immediately so page reloads do not re-trigger checks
+      window.history.replaceState({}, '', window.location.pathname);
     }
 
     if (!target) return;

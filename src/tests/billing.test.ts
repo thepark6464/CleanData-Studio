@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CREDIT_PACKS, SUBSCRIPTION_PLANS } from '../config/pricing';
 import { CleanDataApiClient, CleanDataApiError } from '../lib/api/client';
@@ -366,5 +368,43 @@ describe('Pricing catalog & Cashfree billing API client', () => {
     expect(recoveredProState.purchasedCreditsText).toBe('50');
     expect(recoveredProState.totalCreditsText).toBe('550');
   });
+
+  it('routes extension-less SPA paths to /index.html while preserving /api and static assets in vercel.json', () => {
+    const vercelConfigPath = path.resolve(__dirname, '../../vercel.json');
+    const config = JSON.parse(fs.readFileSync(vercelConfigPath, 'utf-8')) as {
+      services: Record<string, unknown>;
+      rewrites: Array<{
+        source: string;
+        destination: { service: string; path?: string };
+      }>;
+    };
+
+    expect(config.services).toEqual({
+      app: { root: '.', framework: 'vite' },
+      backend: { root: 'backend', framework: 'fastapi', entrypoint: 'app.main:app' },
+    });
+
+    const matchRewrite = (pathname: string) => {
+      for (const rule of config.rewrites) {
+        const regex = new RegExp(`^${rule.source}$`);
+        if (regex.test(pathname)) {
+          return rule.destination;
+        }
+      }
+      return null;
+    };
+
+    expect(matchRewrite('/dashboard/billing')).toEqual({ service: 'app', path: '/index.html' });
+    expect(matchRewrite('/pricing')).toEqual({ service: 'app', path: '/index.html' });
+    expect(matchRewrite('/')).toEqual({ service: 'app', path: '/index.html' });
+    expect(matchRewrite('/api')).toEqual({ service: 'backend' });
+    expect(matchRewrite('/api/health')).toEqual({ service: 'backend' });
+    expect(matchRewrite('/api/v1/billing/verify')).toEqual({ service: 'backend' });
+    expect(matchRewrite('/assets/index-abc123.js')).toEqual({ service: 'app' });
+    expect(matchRewrite('/favicon.svg')).toEqual({ service: 'app' });
+    expect(matchRewrite('/robots.txt')).toEqual({ service: 'app' });
+    expect(matchRewrite('/sitemap.xml')).toEqual({ service: 'app' });
+  });
 });
+
 

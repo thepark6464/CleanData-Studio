@@ -940,6 +940,35 @@ async def verify_checkout(
                     "Cashfree subscription amount did not match our catalog plan price.",
                 )
 
+        if owned_sub and str(owned_sub.get("status") or "").lower() == "active":
+            if db is not None:
+                try:
+                    summary = await db.get_billing_summary(user.user_id)
+                except (SupabaseOperationError, httpx.HTTPError, ValueError, TypeError) as exc:
+                    raise map_billing_db_error(
+                        exc,
+                        endpoint="/api/v1/billing/verify",
+                        request_id=request_id,
+                        user_id=user.user_id,
+                        default_operation="get_billing_summary",
+                    ) from exc
+            else:
+                summary = request.app.state.credits.get_summary(user.user_id)
+            log_event(
+                "billing_subscription_already_active",
+                request_id,
+                user_id=user.user_id,
+                subscription_id=sub_id,
+            )
+            return CheckoutVerifyResponse(
+                kind="subscription",
+                status="active",
+                item_name=item_name,
+                wallet=summary.wallet,
+                subscription=summary.subscription,
+                message=f"{item_name or 'Monthly'} subscription mandate is active and monthly credits are ready.",
+            )
+
         # Cancel any prior active paid subscription on Cashfree before finalizing activation
         try:
             await _cancel_superseded_cashfree_subscriptions(

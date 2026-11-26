@@ -25,9 +25,16 @@
       }
     },
     {
-      "source": "/(.*)",
+      "source": "/(.*\\.[a-zA-Z0-9]+)",
       "destination": {
         "service": "app"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "app",
+        "path": "/index.html"
       }
     }
   ]
