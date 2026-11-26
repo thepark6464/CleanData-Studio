@@ -304,9 +304,11 @@ export function runCleaningPipeline(
     });
   }
 
+  const deduplicatedIssues = coalesceCellIssues(allIssues);
+
   const issueCountsByRule: Record<string, number> = {};
   const flagsByRow = new Map<number, string[]>();
-  for (const issue of allIssues) {
+  for (const issue of deduplicatedIssues) {
     issueCountsByRule[issue.rule_id] = (issueCountsByRule[issue.rule_id] ?? 0) + 1;
     if (includeCleaningFlags && issue.column !== '*') {
       const tag = `${issue.column}:${issue.rule_id}`;
@@ -411,7 +413,7 @@ export function runCleaningPipeline(
     columnTypes: postTypeMap,
   });
 
-  const issuesCsvOutput = exportIssuesToCsv(allIssues, outputDelimiter);
+  const issuesCsvOutput = exportIssuesToCsv(deduplicatedIssues, outputDelimiter);
 
   if (formulaProtection && formulaCellsEscaped > 0) {
     allWarnings.push({
@@ -452,7 +454,7 @@ export function runCleaningPipeline(
     warnings: deduplicateWarnings(allWarnings),
     qualityBefore: inspection.qualityBefore,
     qualityAfter: afterInspection.qualityBefore,
-    issues: allIssues,
+    issues: deduplicatedIssues,
     issueCountsByRule,
     merges: allMerges,
     nearDuplicatesMerged,
@@ -469,6 +471,82 @@ export function runCleaningPipeline(
     report,
     diffRows,
   };
+}
+
+const RULE_PRECEDENCE: Record<string, number> = {
+  whitespace_trimmed: 1,
+  text_case_normalized: 2,
+  coupon_canonicalized: 3,
+  email_normalized: 4,
+  phone_normalized: 4,
+  date_standardized: 4,
+  numeric_normalized: 4,
+  missing_filled: 5,
+  placeholder_to_null: 6,
+  email_invalid_flagged: 7,
+  email_invalid_cleared: 7,
+  phone_invalid_flagged: 7,
+  phone_invalid_cleared: 7,
+  date_invalid_flagged: 7,
+  date_invalid_cleared: 7,
+  numeric_invalid_flagged: 7,
+  numeric_invalid_cleared: 7,
+  duplicate_key_merged: 8,
+  duplicate_key_conflict: 9,
+  empty_row_removed: 10,
+  missing_row_removed: 10,
+  duplicate_exact_removed: 10,
+};
+
+const SEVERITY_RANK: Record<CleaningIssue['severity'], number> = {
+  info: 1,
+  warning: 2,
+  error: 3,
+};
+
+const ROW_LEVEL_RULES = new Set([
+  'empty_row_removed',
+  'missing_row_removed',
+  'duplicate_exact_removed',
+]);
+
+export function coalesceCellIssues(issues: CleaningIssue[]): CleaningIssue[] {
+  const result: CleaningIssue[] = [];
+  const cellIndexMap = new Map<string, number>();
+
+  for (const issue of issues) {
+    if (issue.column === '*' || ROW_LEVEL_RULES.has(issue.rule_id)) {
+      result.push(issue);
+      continue;
+    }
+
+    const key = `${issue.row}\0${issue.column}`;
+    const existingIdx = cellIndexMap.get(key);
+    if (existingIdx === undefined) {
+      cellIndexMap.set(key, result.length);
+      result.push({ ...issue });
+      continue;
+    }
+
+    const prev = result[existingIdx];
+    const prevRank = RULE_PRECEDENCE[prev.rule_id] ?? 5;
+    const nextRank = RULE_PRECEDENCE[issue.rule_id] ?? 5;
+    const nextSev =
+      SEVERITY_RANK[issue.severity] >= SEVERITY_RANK[prev.severity]
+        ? issue.severity
+        : prev.severity;
+
+    result[existingIdx] = {
+      row: prev.row,
+      column: prev.column,
+      original: prev.original,
+      new: issue.new,
+      rule_id: nextRank >= prevRank ? issue.rule_id : prev.rule_id,
+      severity: nextSev,
+    };
+  }
+
+  return result;
 }
 
 function deduplicateWarnings(warnings: CleaningWarning[]): CleaningWarning[] {

@@ -634,7 +634,98 @@ describe('CleanData Studio Production Cleaning Rules & Parity (Phase 5)', () => 
     expect(res.report.qualityAfter.score).toBeGreaterThan(res.report.qualityBefore.score);
     expect(elapsedCleanMs).toBeLessThan(2000);
   });
+
+  it('supports configurable mergeKeyColumns (order_id vs customer_id) for near-duplicate merging', () => {
+    const csv = [
+      'order_id,customer_id,city,email',
+      'ORD-1,CUST-10,,a@example.com',
+      'ORD-2,CUST-10,Kochi,a@example.com',
+      'ORD-3,CUST-20,Indore,b@example.com',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'multi_key.csv');
+
+    // Default auto-detect prefers order_id (distinct orders stay separate)
+    const defaultOps = buildDefaultOperations(inspection);
+    const byOrderRes = runCleaningPipeline(inspection, defaultOps);
+    expect(byOrderRes.rows.length).toBe(3);
+
+    // Explicitly configuring customer_id merges CUST-10 rows into 2 total rows
+    const byCustomerOps = defaultOps.map((op) =>
+      op.id === 'remove_duplicates'
+        ? {
+            ...op,
+            enabled: true,
+            params: { ...op.params, mergeNearDuplicates: true, mergeKeyColumns: ['customer_id'] },
+          }
+        : op,
+    );
+    const byCustomerRes = runCleaningPipeline(inspection, byCustomerOps);
+    expect(byCustomerRes.rows.length).toBe(2);
+    expect(byCustomerRes.report.nearDuplicatesMerged).toBe(1);
+    expect(byCustomerRes.rows[0]).toEqual(['ORD-2', 'CUST-10', 'Kochi', 'a@example.com']);
+  });
+
+  it('penalizes empty non-coupon cells in qualityScore without double-counting whitespace/missing/coupons', () => {
+    const csv = [
+      'id,email,city,coupon',
+      '1,a@example.com,Kochi,',
+      '2,  ,   ,NONE',
+      '3,,,,',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'score_missing.csv');
+    // Total cells = 12. Failing: row2(email, city, coupon=NONE) + row3(email, city) = 5.
+    // Blank coupon on row1 & row3 are explicitly valid no-coupon states; passing = 7/12 = 58.3%
+    expect(inspection.qualityBefore.totalCells).toBe(12);
+    expect(inspection.qualityBefore.failingCells).toBe(5);
+    expect(inspection.qualityBefore.passingCells).toBe(7);
+    expect(inspection.qualityBefore.score).toBe(58.3);
+  });
+
+  it('coalesces multiple rule triggers on the same cell so issue counts never double-count', () => {
+    const csv = [
+      'order_id,customer_name,email,city,state,coupon',
+      'ORD-1,  alice   sharma ,  ALICE@EXAMPLE.COM ,  kochi ,  ?? ,  none ',
+      'ORD-2,Bob,  N/A ,Indore,KL,NONE',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'coalesce.csv');
+    const res = runCleaningPipeline(inspection, buildDefaultOperations(inspection));
+
+    const issues = res.report.issues ?? [];
+    const keys = issues.map((i) => `${i.row}:${i.column}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    // 6 dirty cells on row 1+2 + 2 NONE coupons = 7 unique dirty cells total
+    expect(issues.length).toBe(7);
+    const totalFromMap = Object.values(res.report.issueCountsByRule ?? {}).reduce((a, b) => a + b, 0);
+    expect(totalFromMap).toBe(issues.length);
+
+    const emailIssue = issues.find((i) => i.row === 1 && i.column === 'email');
+    expect(emailIssue?.original).toBe('  ALICE@EXAMPLE.COM ');
+    expect(emailIssue?.new).toBe('alice@example.com');
+    expect(emailIssue?.rule_id).toBe('email_normalized');
+
+    const naIssue = issues.find((i) => i.row === 2 && i.column === 'email');
+    expect(naIssue?.original).toBe('  N/A ');
+    expect(naIssue?.new).toBe('');
+    expect(naIssue?.rule_id).toBe('placeholder_to_null');
+  });
+
+  it('never formula-escapes negative numbers even in mixed columns while escaping unsafe formulas', () => {
+    const csv = [
+      'id,amount,phone,notes',
+      '1,-45.00,+91 98765 43210,=CMD()',
+      '2,free,+91 98111 22233,+1+1 formula risk',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'neg_mixed.csv');
+    const res = runCleaningPipeline(inspection, buildDefaultOperations(inspection), {
+      formulaProtection: true,
+    });
+    expect(res.csvOutput).toContain(',-45.00,');
+    expect(res.csvOutput).toContain(',+919876543210,');
+    expect(res.csvOutput).toContain("'=CMD()");
+    expect(res.csvOutput).toContain("'+1+1 formula risk");
+  });
 });
+
 
 
 

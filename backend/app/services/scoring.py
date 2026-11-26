@@ -2,13 +2,16 @@ import json
 import pandas as pd
 
 from app.models import CleaningWarning, QualityScoreBreakdown
-from app.services.validators.field_validators import infer_column_stats
+from app.services.validators.field_validators import (
+    default_numeric_rule_for_header,
+    infer_column_stats,
+    is_cell_failing_validation,
+)
 from app.utils.security import is_formula_trigger
 
 
 FORMULA_DESCRIPTION = (
-    "score = round(100 * (passing_cells / total_cells), 1) "
-    "(share of cells passing all validation & deduplication rules)"
+    "score = round(100 * (passing_cells / total_cells), 1); non-coupon empty/missing cells always fail, empty coupon cells pass as no-coupon, each cell counted at most once"
 )
 
 
@@ -43,7 +46,6 @@ def inspect_dataframe(
     missing_count = 0
     invalid_count = 0
     type_inconsistent_count = 0
-    whitespace_issues = 0
     ambiguous_dates = 0
     invalid_emails = 0
 
@@ -54,7 +56,6 @@ def inspect_dataframe(
         missing_count += stats["missing_count"]
         invalid_count += stats["invalid_count"]
         type_inconsistent_count += stats["type_inconsistent_count"]
-        whitespace_issues += stats.get("whitespace_issue_count", 0)
         if stats["detected_type"] == "date":
             ambiguous_dates += stats["ambiguous_date_count"]
         elif stats["detected_type"] == "email":
@@ -85,11 +86,35 @@ def inspect_dataframe(
         populated = max(1, total_cells - missing_count)
         type_inconsistency_rate = min(1.0, type_inconsistent_count / populated)
 
-        duplicate_cells = duplicate_rows * total_cols
-        failing_cells = min(
-            total_cells,
-            missing_count + invalid_count + whitespace_issues + duplicate_cells,
-        )
+        numeric_rules = [default_numeric_rule_for_header(h) for h in headers]
+        detected_types = [column_types.get(h, "text") for h in headers]
+
+        failing_cells = 0
+        seen_row_keys: set[str] = set()
+        for row in df.itertuples(index=False, name=None):
+            cells = [str(c) for c in row]
+            if all(c.strip() == "" for c in cells):
+                failing_cells += total_cols
+                continue
+            rkey = json.dumps(cells)
+            if rkey in seen_row_keys:
+                failing_cells += total_cols
+                continue
+            seen_row_keys.add(rkey)
+            for c_idx in range(total_cols):
+                val = cells[c_idx]
+                dtype = detected_types[c_idx]
+                is_num_col = dtype in ("integer", "decimal")
+                if is_cell_failing_validation(
+                    val,
+                    headers[c_idx],
+                    dtype,
+                    numeric_rules[c_idx],
+                    is_formula_trigger(val, is_num_col),
+                ):
+                    failing_cells += 1
+
+        failing_cells = min(total_cells, failing_cells)
         passing_cells = max(0, total_cells - failing_cells)
         validation_pass_rate = passing_cells / total_cells
         score = round(max(0.0, min(100.0, validation_pass_rate * 100.0)) * 10.0) / 10.0

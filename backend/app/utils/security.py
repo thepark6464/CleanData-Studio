@@ -117,7 +117,7 @@ def escape_formula_cell(
             return value, False
         return f"'{value}", True
     if first == "-":
-        if is_numeric_column and re.match(r"^-?\d+(?:\.\d+)?$", value.strip()):
+        if re.match(r"^-\d+(?:\.\d+)?$", value.strip()):
             return value, False
         return f"'{value}", True
     return value, False

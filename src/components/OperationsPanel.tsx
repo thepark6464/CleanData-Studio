@@ -248,9 +248,46 @@ export const OperationsPanel: React.FC<OperationsPanelProps> = ({
                         Merge key-duplicate rows (keeps most complete row, fills blanks from duplicates, logs field conflicts)
                       </span>
                     </label>
+                    {op.params.mergeNearDuplicates && (
+                      <div className="text-xs">
+                        <p className="font-medium text-slate-700 mb-1.5">
+                          Near-duplicate merge key columns (leave unchecked to auto-detect primary ID e.g.{' '}
+                          <code className="font-mono">order_id</code> or <code className="font-mono">customer_id</code>):
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {inspection.headers.map((h) => {
+                            const selectedMergeKeys = op.params.mergeKeyColumns ?? [];
+                            const checked = selectedMergeKeys.includes(h);
+                            return (
+                              <label
+                                key={`merge-${h}`}
+                                className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 px-2.5 py-1 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const nextMergeKeys = e.target.checked
+                                      ? [...selectedMergeKeys, h]
+                                      : selectedMergeKeys.filter((k) => k !== h);
+                                    updateOp<
+                                      Extract<CleaningOperationConfig, { id: 'remove_duplicates' }>
+                                    >(index, (prev) => ({
+                                      ...prev,
+                                      params: { ...prev.params, mergeKeyColumns: nextMergeKeys },
+                                    }));
+                                  }}
+                                />
+                                <span className="font-mono text-slate-800">{h}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     <div className="text-xs">
                       <p className="font-medium text-slate-700 mb-1.5">
-                        Key columns (leave all unchecked to match entire row):
+                        Exact-duplicate key columns (leave all unchecked to match entire row):
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {inspection.headers.map((h) => {

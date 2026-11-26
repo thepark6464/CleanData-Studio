@@ -536,7 +536,13 @@ export function inferColumnType(values: string[], headerName: string): {
   for (const val of values) {
     const trimmed = val.trim();
     if (isCouponCol && trimmed === '') {
-      // Blank coupon is valid "no coupon" state
+      // Blank coupon is explicitly documented as valid "no coupon" state
+      continue;
+    }
+    if (isCouponCol && COUPON_EMPTY_TOKENS.has(trimmed.toLowerCase())) {
+      // Count non-canonical empty sentinels like "NONE" / "nil" once under invalidCount, not missingCount
+      nonEmptyCount++;
+      counts.text++;
       continue;
     }
     if (isMissingValue(val)) {
@@ -671,6 +677,59 @@ export function inferColumnType(values: string[], headerName: string): {
   };
 }
 
+function isCellFailingValidation(
+  val: string,
+  headerName: string,
+  detectedType: ColumnType,
+  numericRule: NumericColumnRule | null,
+): boolean {
+  const trimmed = val.trim();
+  const isCouponCol = isCouponHeader(headerName);
+
+  // Explicit exemption: blank coupon means "no coupon applied"
+  if (isCouponCol && trimmed === '') {
+    return val !== '';
+  }
+  if (isCouponCol && COUPON_EMPTY_TOKENS.has(trimmed.toLowerCase())) {
+    return true;
+  }
+  // Missing or empty cell in any non-coupon column MUST fail validation
+  if (isMissingValue(val)) {
+    return true;
+  }
+  // Whitespace hygiene defect
+  if (val !== trimmed || / {2,}|\t/.test(val)) {
+    return true;
+  }
+  const isNumericCol = detectedType === 'integer' || detectedType === 'decimal';
+  if (isFormulaTrigger(val, isNumericCol)) {
+    return true;
+  }
+  if (detectedType === 'email') {
+    return !isValidEmailSyntax(val);
+  }
+  if (detectedType === 'date') {
+    return !parseDateValue(val, true).valid;
+  }
+  if (detectedType === 'phone') {
+    if (trimmed.startsWith('+')) {
+      if (!E164_SAFE_REGEX.test(trimmed) || isJunkPhoneDigits(trimmed.slice(-10), 'IN')) {
+        const parsed = parsePhoneNumberFromString(trimmed);
+        const nat = String(parsed?.nationalNumber ?? '').replace(/\D/g, '');
+        const region = (parsed?.country as SupportedPhoneRegion | undefined) ?? 'IN';
+        return !parsed || !parsed.isValid() || isJunkPhoneDigits(nat, region);
+      }
+      return false;
+    }
+    const digits = trimmed.replace(/\D/g, '');
+    return digits.length < 7 || digits.length > 15 || isJunkPhoneDigits(digits.slice(-10), 'IN');
+  }
+  if (numericRule) {
+    return !validateNumericValue(val, numericRule).valid;
+  }
+  return false;
+}
+
 export function computeQualityScore(
   headers: string[],
   rows: string[][],
@@ -684,7 +743,6 @@ export function computeQualityScore(
 
   const missingCount = columnProfiles.reduce((acc, col) => acc + col.missingCount, 0);
   const invalidCount = columnProfiles.reduce((acc, col) => acc + col.invalidCount, 0);
-  const whitespaceIssues = columnProfiles.reduce((acc, col) => acc + col.whitespaceIssueCount, 0);
 
   if (totalRows === 0 || totalCells === 0) {
     return {
@@ -703,7 +761,7 @@ export function computeQualityScore(
       failingCells: 0,
       validationPassRate: 1,
       formulaDescription:
-        'score = round(100 * (passing_cells / total_cells), 1) (share of cells passing all validation & deduplication rules)',
+        'score = round(100 * (passing_cells / total_cells), 1); non-coupon empty/missing cells always fail, empty coupon cells pass as no-coupon, each cell counted at most once',
     };
   }
 
@@ -713,12 +771,36 @@ export function computeQualityScore(
   const populatedCells = Math.max(1, totalCells - missingCount);
   const typeInconsistencyRate = Math.min(1, typeInconsistentCount / populatedCells);
 
-  // Measured share of cells passing all validation, hygiene, and deduplication checks
-  const duplicateCells = duplicateRowCount * totalCols;
-  const failingCells = Math.min(
-    totalCells,
-    missingCount + invalidCount + whitespaceIssues + duplicateCells,
+  const numericRules = headers.map((h) => defaultNumericRuleForHeader(h));
+  const detectedTypes = headers.map(
+    (h, idx) => columnProfiles[idx]?.detectedType ?? 'text',
   );
+
+  // Per-cell exact deduplicated pass/fail classification (each cell counted at most once)
+  let failingCells = 0;
+  const seenRowKeys = new Set<string>();
+  for (const row of rows) {
+    const isBlankRow = row.every((c) => (c ?? '').trim() === '');
+    if (isBlankRow) {
+      failingCells += totalCols;
+      continue;
+    }
+    const rowKey = JSON.stringify(row);
+    if (seenRowKeys.has(rowKey)) {
+      failingCells += totalCols;
+      continue;
+    }
+    seenRowKeys.add(rowKey);
+
+    for (let c = 0; c < totalCols; c++) {
+      const val = row[c] ?? '';
+      if (isCellFailingValidation(val, headers[c], detectedTypes[c], numericRules[c])) {
+        failingCells++;
+      }
+    }
+  }
+
+  failingCells = Math.min(totalCells, failingCells);
   const passingCells = Math.max(0, totalCells - failingCells);
   const validationPassRate = passingCells / totalCells;
 
@@ -740,6 +822,6 @@ export function computeQualityScore(
     failingCells,
     validationPassRate,
     formulaDescription:
-      'score = round(100 * (passing_cells / total_cells), 1) (share of cells passing all validation & deduplication rules)',
+      'score = round(100 * (passing_cells / total_cells), 1); non-coupon empty/missing cells always fail, empty coupon cells pass as no-coupon, each cell counted at most once',
   };
 }

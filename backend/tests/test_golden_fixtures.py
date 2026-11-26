@@ -226,3 +226,47 @@ def test_production_rules_and_300_row_golden_parity():
     assert pass2_rep.recordsChanged == 0
     assert pass2_bytes.decode("utf-8") == csv_text
 
+
+def test_configurable_merge_key_and_issue_coalescing_and_quality_semantics():
+    csv_bytes = (
+        "order_id,customer_id,customer_name,email,city,coupon,amount\n"
+        "ORD-1,CUST-10,  alice   sharma ,  ALICE@EXAMPLE.COM ,  kochi ,  none ,-45.00\n"
+        "ORD-2,CUST-10,Alice Sharma,alice@example.com,,,free\n"
+        "ORD-3,CUST-20,Bob,  N/A ,Indore,,120.00\n"
+    ).encode("utf-8")
+    dataset = parse_upload_bytes(csv_bytes, "parity_edge.csv", _settings())
+    ops = [
+        OperationRequest(id="trim_whitespace", enabled=True, params={"columns": [], "collapseInternal": True}),
+        OperationRequest(id="canonicalize_coupons", enabled=True, params={"columns": [], "caseMode": "upper"}),
+        OperationRequest(id="placeholder_to_null", enabled=True, params={"columns": []}),
+        OperationRequest(id="normalize_emails", enabled=True, params={"columns": [], "clearInvalid": True}),
+        OperationRequest(
+            id="normalize_text",
+            enabled=True,
+            params={"columns": [], "caseMode": "title", "collapseWhitespace": True, "canonicalMerge": True},
+        ),
+        OperationRequest(
+            id="remove_duplicates",
+            enabled=True,
+            params={"keyColumns": [], "keep": "first", "mergeNearDuplicates": True, "mergeKeyColumns": ["customer_id"]},
+        ),
+    ]
+    cleaned_df, output_bytes, report = run_cleaning_pipeline(
+        dataset, ops, job_id="edge_parity", output_format="csv", formula_protection=True
+    )
+    csv_text = output_bytes.decode("utf-8")
+    assert len(cleaned_df) == 2
+    assert report.nearDuplicatesMerged == 1
+    assert ",-45.00" in csv_text
+    assert "'-45.00" not in csv_text
+
+    # No per-cell double counting across trim + semantic rules
+    cell_keys = [(i.row, i.column) for i in report.issues]
+    assert len(cell_keys) == len(set(cell_keys))
+    assert sum(report.issueCountsByRule.values()) == len(report.issues)
+    # Non-coupon empty cells count as failing in qualityBefore / qualityAfter
+    assert report.qualityBefore.failingCells is not None and report.qualityBefore.failingCells > 0
+    assert report.qualityAfter.passingCells is not None
+    assert report.qualityAfter.passingCells + report.qualityAfter.failingCells == report.qualityAfter.totalCells
+
+

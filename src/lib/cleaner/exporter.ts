@@ -38,7 +38,7 @@ export function escapeFormulaCell(
   }
 
   if (first === '-') {
-    if (isNumericColumn && /^-?\d+(?:\.\d+)?$/.test(value.trim())) {
+    if (/^-\d+(?:\.\d+)?$/.test(value.trim())) {
       return { value, escaped: false };
     }
     return { value: `'${value}`, escaped: true };

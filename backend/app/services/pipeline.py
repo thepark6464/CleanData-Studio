@@ -43,6 +43,70 @@ OPERATION_LABELS = {
     "rename_columns": "Rename Columns",
 }
 
+_RULE_PRECEDENCE: dict[str, int] = {
+    "whitespace_trimmed": 1,
+    "text_case_normalized": 2,
+    "coupon_canonicalized": 3,
+    "email_normalized": 4,
+    "phone_normalized": 4,
+    "date_standardized": 4,
+    "numeric_normalized": 4,
+    "missing_filled": 5,
+    "placeholder_to_null": 6,
+    "email_invalid_flagged": 7,
+    "email_invalid_cleared": 7,
+    "phone_invalid_flagged": 7,
+    "phone_invalid_cleared": 7,
+    "date_invalid_flagged": 7,
+    "date_invalid_cleared": 7,
+    "numeric_invalid_flagged": 7,
+    "numeric_invalid_cleared": 7,
+    "duplicate_key_merged": 8,
+    "duplicate_key_conflict": 9,
+    "empty_row_removed": 10,
+    "missing_row_removed": 10,
+    "duplicate_exact_removed": 10,
+}
+
+_SEVERITY_RANK: dict[str, int] = {"info": 1, "warning": 2, "error": 3}
+_ROW_LEVEL_RULES = {"empty_row_removed", "missing_row_removed", "duplicate_exact_removed"}
+
+
+def _coalesce_cell_issues(issues: list[CleaningIssue]) -> list[CleaningIssue]:
+    result: list[CleaningIssue] = []
+    cell_index_map: dict[tuple[int, str], int] = {}
+
+    for issue in issues:
+        if issue.column == "*" or issue.rule_id in _ROW_LEVEL_RULES:
+            result.append(issue)
+            continue
+
+        key = (issue.row, issue.column)
+        existing_idx = cell_index_map.get(key)
+        if existing_idx is None:
+            cell_index_map[key] = len(result)
+            result.append(issue.model_copy())
+            continue
+
+        prev = result[existing_idx]
+        prev_rank = _RULE_PRECEDENCE.get(prev.rule_id, 5)
+        next_rank = _RULE_PRECEDENCE.get(issue.rule_id, 5)
+        next_sev = (
+            issue.severity
+            if _SEVERITY_RANK.get(issue.severity, 1) >= _SEVERITY_RANK.get(prev.severity, 1)
+            else prev.severity
+        )
+        result[existing_idx] = CleaningIssue(
+            row=prev.row,
+            column=prev.column,
+            original=prev.original,
+            new=issue.new,
+            rule_id=issue.rule_id if next_rank >= prev_rank else prev.rule_id,
+            severity=next_sev,
+        )
+
+    return result
+
 
 def run_cleaning_pipeline(
     dataset: ParsedDataset,
@@ -228,9 +292,11 @@ def run_cleaning_pipeline(
         if src_i < len(orig_rows) and after_rows[pos] != orig_rows[src_i]:
             records_changed += 1
 
+    deduplicated_issues = _coalesce_cell_issues(all_issues)
+
     issue_counts_by_rule: dict[str, int] = {}
     flags_by_row: dict[int, list[str]] = {}
-    for issue in all_issues:
+    for issue in deduplicated_issues:
         issue_counts_by_rule[issue.rule_id] = issue_counts_by_rule.get(issue.rule_id, 0) + 1
         if include_cleaning_flags and issue.column != "*":
             tag = f"{issue.column}:{issue.rule_id}"
@@ -311,7 +377,7 @@ def run_cleaning_pipeline(
         warnings=deduped_warnings,
         qualityBefore=before_info["quality"],
         qualityAfter=after_info["quality"],
-        issues=all_issues,
+        issues=deduplicated_issues,
         issueCountsByRule=issue_counts_by_rule,
         merges=all_merges,
         nearDuplicatesMerged=near_duplicates_merged,

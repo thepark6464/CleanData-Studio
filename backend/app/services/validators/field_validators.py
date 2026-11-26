@@ -407,6 +407,10 @@ def infer_column_stats(values: list[str], header_name: str) -> dict:
         trimmed = val.strip()
         if is_coupon_col and trimmed == "":
             continue
+        if is_coupon_col and trimmed.lower() in COUPON_EMPTY_TOKENS:
+            non_empty += 1
+            counts["text"] += 1
+            continue
         if is_missing_value(val):
             missing += 1
             continue
@@ -518,3 +522,44 @@ def infer_column_stats(values: list[str], header_name: str) -> dict:
         "type_inconsistent_count": type_inconsistent,
         "whitespace_issue_count": whitespace_issues,
     }
+
+
+def is_cell_failing_validation(
+    val: str,
+    header_name: str,
+    detected_type: str,
+    numeric_rule: dict[str, Any] | None,
+    formula_trigger: bool,
+) -> bool:
+    trimmed = val.strip()
+    is_coupon_col = is_coupon_header(header_name)
+    if is_coupon_col and trimmed == "":
+        return val != ""
+    if is_coupon_col and trimmed.lower() in COUPON_EMPTY_TOKENS:
+        return True
+    if is_missing_value(val):
+        return True
+    if val != trimmed or MULTI_WS_RE.search(val):
+        return True
+    if formula_trigger:
+        return True
+    if detected_type == "email":
+        return not is_valid_email_syntax(val)
+    if detected_type == "date":
+        return not parse_date_value(val, True).valid
+    if detected_type == "phone":
+        if trimmed.startswith("+"):
+            if not E164_SAFE_RE.match(trimmed) or is_junk_phone_digits(trimmed[-10:], "IN"):
+                try:
+                    p = phonenumbers.parse(trimmed, None)
+                    nat = re.sub(r"\D", "", str(p.national_number or ""))
+                    reg = phonenumbers.region_code_for_number(p) or "IN"
+                    return (not phonenumbers.is_valid_number(p)) or is_junk_phone_digits(nat, reg)
+                except phonenumbers.NumberParseException:
+                    return True
+            return False
+        digits = re.sub(r"\D", "", trimmed)
+        return len(digits) < 7 or len(digits) > 15 or is_junk_phone_digits(digits[-10:], "IN")
+    if numeric_rule is not None:
+        return not validate_numeric_value(val, numeric_rule)[0]
+    return False
