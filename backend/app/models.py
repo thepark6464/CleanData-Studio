@@ -6,10 +6,13 @@ OperationId = Literal[
     "remove_empty_rows",
     "remove_duplicates",
     "trim_whitespace",
+    "placeholder_to_null",
+    "canonicalize_coupons",
     "normalize_text",
     "standardize_dates",
     "normalize_emails",
     "normalize_phone_numbers",
+    "validate_numbers",
     "handle_missing_values",
     "rename_columns",
 ]
@@ -70,6 +73,9 @@ class QualityScoreBreakdown(BaseModel):
     totalCells: int
     totalRows: int
     formulaDescription: str
+    passingCells: int | None = None
+    failingCells: int | None = None
+    validationPassRate: float | None = None
 
 
 class CleaningWarning(BaseModel):
@@ -78,6 +84,30 @@ class CleaningWarning(BaseModel):
     message: str
     column: str | None = None
     count: int | None = None
+
+
+class CleaningIssue(BaseModel):
+    row: int
+    column: str
+    original: str
+    new: str
+    rule_id: str
+    severity: Literal["info", "warning", "error"]
+
+
+class NearDuplicateMergeConflict(BaseModel):
+    column: str
+    keptValue: str
+    conflictingValues: list[str]
+
+
+class NearDuplicateMergeRecord(BaseModel):
+    keyColumns: list[str]
+    keyValue: str
+    keptRowNumber: int
+    mergedRowNumbers: list[int]
+    filledColumns: list[str]
+    conflicts: list[NearDuplicateMergeConflict]
 
 
 class OperationSummary(BaseModel):
@@ -115,6 +145,11 @@ class CleaningReport(BaseModel):
     warnings: list[CleaningWarning]
     qualityBefore: QualityScoreBreakdown
     qualityAfter: QualityScoreBreakdown
+    issues: list[CleaningIssue] = Field(default_factory=list)
+    issueCountsByRule: dict[str, int] = Field(default_factory=dict)
+    merges: list[NearDuplicateMergeRecord] = Field(default_factory=list)
+    nearDuplicatesMerged: int = 0
+    includeCleaningFlags: bool = False
 
 
 class JobStatusResponse(BaseModel):

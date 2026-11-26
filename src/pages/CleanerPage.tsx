@@ -1,5 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, Download, Server, ShieldCheck } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  Download,
+  ListChecks,
+  Server,
+  ShieldCheck,
+} from 'lucide-react';
 import {
   buildDefaultOperations,
   type CleaningOperationConfig,
@@ -7,6 +16,7 @@ import {
   type ColumnType,
   CsvParseError,
   type DatasetInspection,
+  exportIssuesToCsv,
   parseCsvBuffer,
   parseXlsxBuffer,
   runCleaningPipeline,
@@ -53,6 +63,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
   const [formulaProtection, setFormulaProtection] = useState<boolean>(
     preferences.formulaProtection,
   );
+  const [includeCleaningFlags, setIncludeCleaningFlags] = useState<boolean>(false);
   const [cleaningResult, setCleaningResult] = useState<CleaningResult | null>(null);
 
   // Server processing state (Phase 3)
@@ -277,6 +288,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
           operations,
           outputFormat: serverOutputFormat,
           formulaProtection,
+          includeCleaningFlags,
           delimiterOverride: inspection.inputFormat === 'csv' ? inspection.delimiter : undefined,
           idempotencyKey: `studio_${Date.now().toString(36)}`,
         });
@@ -311,6 +323,7 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
 
     const result = runCleaningPipeline(inspection, operations, {
       formulaProtection,
+      includeCleaningFlags,
     });
     setServerJob(null);
     setServerReport(null);
@@ -323,6 +336,18 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
     if (processingMode === 'browser' && inspection && cleaningResult) {
       const result = runCleaningPipeline(inspection, operations, {
         formulaProtection: enabled,
+        includeCleaningFlags,
+      });
+      setCleaningResult(result);
+    }
+  };
+
+  const handleIncludeCleaningFlagsChange = (enabled: boolean) => {
+    setIncludeCleaningFlags(enabled);
+    if (processingMode === 'browser' && inspection && cleaningResult) {
+      const result = runCleaningPipeline(inspection, operations, {
+        formulaProtection,
+        includeCleaningFlags: enabled,
       });
       setCleaningResult(result);
     }
@@ -527,6 +552,8 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
             onChangeOperations={setOperations}
             formulaProtection={formulaProtection}
             onChangeFormulaProtection={handleFormulaProtectionChange}
+            includeCleaningFlags={includeCleaningFlags}
+            onChangeIncludeCleaningFlags={handleIncludeCleaningFlagsChange}
             onRunCleaning={() => void handleRunCleaning()}
           />
 
@@ -574,16 +601,39 @@ export const CleanerPage: React.FC<CleanerPageProps> = ({ fileInputRef }) => {
                   Rows: {serverReport.rowsBefore} → {serverReport.rowsAfter} · Removed: {serverReport.recordsRemoved} · Formula-escaped: {serverReport.formulaCellsEscaped} · Credits charged: {serverJob.credits_charged ?? 0}
                 </p>
               </div>
-              {serverJob.download_url && (
-                <a
-                  href={serverJob.download_url}
-                  download
-                  className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap shrink-0"
-                >
-                  <Download className="h-4 w-4" aria-hidden="true" />
-                  <span>Download Cleaned {serverJob.output_format.toUpperCase()} (Signed URL)</span>
-                </a>
-              )}
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                {serverReport.issues && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const csv = exportIssuesToCsv(serverReport.issues ?? []);
+                      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = `issues_${serverJob.input_name.replace(/\.[^/.]+$/, '') || 'dataset'}.csv`;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <ListChecks className="h-4 w-4" aria-hidden="true" />
+                    <span>Download Issues CSV ({serverReport.issues.length})</span>
+                  </button>
+                )}
+                {serverJob.download_url && (
+                  <a
+                    href={serverJob.download_url}
+                    download
+                    className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap shrink-0"
+                  >
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    <span>Download Cleaned {serverJob.output_format.toUpperCase()} (Signed URL)</span>
+                  </a>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

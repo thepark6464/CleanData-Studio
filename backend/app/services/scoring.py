@@ -7,8 +7,8 @@ from app.utils.security import is_formula_trigger
 
 
 FORMULA_DESCRIPTION = (
-    "score = clamp(100 - (30 * missing_rate + 30 * invalid_rate + "
-    "25 * duplicate_rate + 15 * type_inconsistency_rate), 0, 100)"
+    "score = round(100 * (passing_cells / total_cells), 1) "
+    "(share of cells passing all validation & deduplication rules)"
 )
 
 
@@ -43,6 +43,7 @@ def inspect_dataframe(
     missing_count = 0
     invalid_count = 0
     type_inconsistent_count = 0
+    whitespace_issues = 0
     ambiguous_dates = 0
     invalid_emails = 0
 
@@ -53,6 +54,7 @@ def inspect_dataframe(
         missing_count += stats["missing_count"]
         invalid_count += stats["invalid_count"]
         type_inconsistent_count += stats["type_inconsistent_count"]
+        whitespace_issues += stats.get("whitespace_issue_count", 0)
         if stats["detected_type"] == "date":
             ambiguous_dates += stats["ambiguous_date_count"]
         elif stats["detected_type"] == "email":
@@ -71,6 +73,9 @@ def inspect_dataframe(
             typeInconsistentCount=0,
             totalCells=0,
             totalRows=0,
+            passingCells=0,
+            failingCells=0,
+            validationPassRate=1.0,
             formulaDescription=FORMULA_DESCRIPTION,
         )
     else:
@@ -79,13 +84,16 @@ def inspect_dataframe(
         duplicate_rate = duplicate_rows / total_rows
         populated = max(1, total_cells - missing_count)
         type_inconsistency_rate = min(1.0, type_inconsistent_count / populated)
-        raw_score = 100.0 - (
-            30.0 * missing_rate
-            + 30.0 * invalid_rate
-            + 25.0 * duplicate_rate
-            + 15.0 * type_inconsistency_rate
+
+        duplicate_cells = duplicate_rows * total_cols
+        failing_cells = min(
+            total_cells,
+            missing_count + invalid_count + whitespace_issues + duplicate_cells,
         )
-        score = round(max(0.0, min(100.0, raw_score)) * 10.0) / 10.0
+        passing_cells = max(0, total_cells - failing_cells)
+        validation_pass_rate = passing_cells / total_cells
+        score = round(max(0.0, min(100.0, validation_pass_rate * 100.0)) * 10.0) / 10.0
+
         breakdown = QualityScoreBreakdown(
             score=score,
             missingRate=missing_rate,
@@ -98,6 +106,9 @@ def inspect_dataframe(
             typeInconsistentCount=type_inconsistent_count,
             totalCells=total_cells,
             totalRows=total_rows,
+            passingCells=passing_cells,
+            failingCells=failing_cells,
+            validationPassRate=validation_pass_rate,
             formulaDescription=FORMULA_DESCRIPTION,
         )
 

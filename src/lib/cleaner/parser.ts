@@ -255,7 +255,7 @@ export function inspectParsedTable(params: {
     }
 
     for (const cell of row) {
-      if (cell !== cell.trim()) {
+      if (cell !== cell.trim() || / {2,}|\t/.test(cell)) {
         whitespaceCells++;
       }
       if (isFormulaTrigger(cell)) {
@@ -282,7 +282,7 @@ export function inspectParsedTable(params: {
     const sampleValues: string[] = [];
 
     for (const val of colValues) {
-      if (val !== val.trim()) whitespaceIssueCount++;
+      if (val !== val.trim() || / {2,}|\t/.test(val)) whitespaceIssueCount++;
       if (isFormulaTrigger(val)) formulaTriggerCount++;
       if (!isMissingValue(val)) {
         uniqueSet.add(val.trim());

@@ -1,4 +1,9 @@
-import type { CleaningOperationConfig, QualityScoreBreakdown } from '../cleaner/types';
+import type {
+  CleaningIssue,
+  CleaningOperationConfig,
+  NearDuplicateMergeRecord,
+  QualityScoreBreakdown,
+} from '../cleaner/types';
 
 export interface ApiErrorEnvelope {
   success: false;
@@ -89,6 +94,11 @@ export interface ServerCleaningReport {
   }>;
   qualityBefore: QualityScoreBreakdown;
   qualityAfter: QualityScoreBreakdown;
+  issues?: CleaningIssue[];
+  issueCountsByRule?: Record<string, number>;
+  merges?: NearDuplicateMergeRecord[];
+  nearDuplicatesMerged?: number;
+  includeCleaningFlags?: boolean;
 }
 
 export interface JobReportResponse {
@@ -111,6 +121,7 @@ export interface CleanJobSubmitParams {
   operations: CleaningOperationConfig[];
   outputFormat: 'csv' | 'xlsx';
   formulaProtection: boolean;
+  includeCleaningFlags?: boolean;
   delimiterOverride?: string;
   idempotencyKey?: string;
 }

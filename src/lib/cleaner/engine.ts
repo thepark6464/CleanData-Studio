@@ -1,19 +1,24 @@
-import { exportRowsToCsv } from './exporter';
+import { exportIssuesToCsv, exportRowsToCsv } from './exporter';
 import {
+  applyCanonicalizeCoupons,
   applyHandleMissingValues,
   applyNormalizeEmails,
   applyNormalizePhoneNumbers,
   applyNormalizeText,
+  applyPlaceholderToNull,
   applyRemoveDuplicates,
   applyRemoveEmptyRows,
   applyRenameColumns,
   applyStandardizeDates,
   applyTrimWhitespace,
+  applyValidateNumbers,
+  detectMergeKeyColumns,
   type OperationStepResult,
   type TrackedRow,
 } from './operations';
 import { inspectParsedTable } from './parser';
 import type {
+  CleaningIssue,
   CleaningOperationConfig,
   CleaningReport,
   CleaningResult,
@@ -23,19 +28,28 @@ import type {
   DateOutputFormat,
   DiffCellChange,
   DiffRow,
+  NearDuplicateMergeRecord,
   OperationId,
   OperationSummary,
   SupportedPhoneRegion,
 } from './types';
+import {
+  DEFAULT_PLACEHOLDER_TOKENS,
+  defaultNumericRuleForHeader,
+  isCouponHeader,
+} from './validators';
 
 const OPERATION_LABELS: Record<OperationId, string> = {
   remove_empty_rows: 'Remove Empty Rows',
-  remove_duplicates: 'Remove Duplicate Rows',
+  remove_duplicates: 'Remove & Merge Duplicate Rows',
   trim_whitespace: 'Trim Whitespace',
-  normalize_text: 'Normalize Text',
+  placeholder_to_null: 'Placeholder-to-Null Cleanup',
+  canonicalize_coupons: 'Canonicalize Coupon Codes',
+  normalize_text: 'Normalize & Canonicalize Text',
   standardize_dates: 'Standardize Dates',
-  normalize_emails: 'Normalize Emails',
-  normalize_phone_numbers: 'Normalize Phone Numbers',
+  normalize_emails: 'Normalize & Validate Emails',
+  normalize_phone_numbers: 'Normalize & Validate Phones',
+  validate_numbers: 'Validate Numeric Fields',
   handle_missing_values: 'Handle Missing Values',
   rename_columns: 'Rename Columns',
 };
@@ -50,12 +64,22 @@ export function buildDefaultOperations(
   inspection: DatasetInspection,
   preferences?: DefaultOperationPreferences,
 ): CleaningOperationConfig[] {
-  const { problems, columnProfiles } = inspection;
+  const { problems, columnProfiles, headers, rows } = inspection;
 
   const missingStrategies: Record<string, { strategy: 'keep' }> = {};
   for (const col of columnProfiles) {
     missingStrategies[col.name] = { strategy: 'keep' };
   }
+
+  const hasCouponCol = headers.some((h) => isCouponHeader(h));
+  const hasNumericRuleCol = headers.some((h) => defaultNumericRuleForHeader(h) !== null);
+  const hasTextCol = columnProfiles.some(
+    (c) => (c.detectedType === 'text' || c.detectedType === 'mixed') && !isCouponHeader(c.name),
+  );
+  const trackedSample: TrackedRow[] = rows
+    .slice(0, 500)
+    .map((cells, idx) => ({ originalRowNumber: idx + 1, cells }));
+  const detectedMergeKeys = detectMergeKeyColumns(headers, trackedSample);
 
   return [
     {
@@ -68,7 +92,24 @@ export function buildDefaultOperations(
       enabled: problems.whitespaceCells > 0,
       params: {
         columns: [],
-        collapseInternal: false,
+        collapseInternal: true,
+      },
+    },
+    {
+      id: 'canonicalize_coupons',
+      enabled: hasCouponCol,
+      params: {
+        columns: [],
+        caseMode: 'upper',
+      },
+    },
+    {
+      id: 'placeholder_to_null',
+      enabled: true,
+      params: {
+        columns: [],
+        tokens: [...DEFAULT_PLACEHOLDER_TOKENS],
+        excludeColumns: ['_cleaning_flags'],
       },
     },
     {
@@ -76,6 +117,7 @@ export function buildDefaultOperations(
       enabled: columnProfiles.some((c) => c.detectedType === 'email'),
       params: {
         columns: [],
+        clearInvalid: true,
       },
     },
     {
@@ -85,6 +127,7 @@ export function buildDefaultOperations(
         columns: [],
         defaultRegion: preferences?.phoneRegion ?? 'IN',
         format: 'E.164',
+        clearInvalid: true,
       },
     },
     {
@@ -94,15 +137,26 @@ export function buildDefaultOperations(
         columns: [],
         dayFirst: preferences?.dayFirst ?? true,
         outputFormat: preferences?.dateFormat ?? 'YYYY-MM-DD',
+        clearInvalid: true,
+      },
+    },
+    {
+      id: 'validate_numbers',
+      enabled: hasNumericRuleCol,
+      params: {
+        columns: [],
+        defaultMaxQuantity: 1000,
+        clearInvalid: true,
       },
     },
     {
       id: 'normalize_text',
-      enabled: false,
+      enabled: hasTextCol,
       params: {
         columns: [],
-        caseMode: 'none',
+        caseMode: 'title',
         collapseWhitespace: true,
+        canonicalMerge: true,
       },
     },
     {
@@ -114,10 +168,12 @@ export function buildDefaultOperations(
     },
     {
       id: 'remove_duplicates',
-      enabled: problems.duplicateRows > 0,
+      enabled: problems.duplicateRows > 0 || detectedMergeKeys.length > 0,
       params: {
         keyColumns: [],
         keep: 'first',
+        mergeNearDuplicates: detectedMergeKeys.length > 0,
+        mergeKeyColumns: detectedMergeKeys,
       },
     },
     {
@@ -134,6 +190,7 @@ export function buildDefaultOperations(
 export interface RunPipelineOptions {
   formulaProtection?: boolean;
   outputDelimiter?: ',' | ';' | '\t' | '|';
+  includeCleaningFlags?: boolean;
 }
 
 export function runCleaningPipeline(
@@ -143,6 +200,7 @@ export function runCleaningPipeline(
 ): CleaningResult {
   const formulaProtection = options.formulaProtection ?? true;
   const outputDelimiter = options.outputDelimiter ?? inspection.delimiter;
+  const includeCleaningFlags = options.includeCleaningFlags ?? false;
 
   // Deep-clone rows so original inspection is NEVER mutated
   let currentHeaders = [...inspection.headers];
@@ -159,9 +217,12 @@ export function runCleaningPipeline(
   const removedMap = new Map<number, { reason: string; cells: string[] }>();
   const summaries: OperationSummary[] = [];
   const allWarnings: CleaningWarning[] = [...inspection.warnings];
+  const allIssues: CleaningIssue[] = [];
+  const allMerges: NearDuplicateMergeRecord[] = [];
 
   let emptyRowsRemoved = 0;
   let duplicatesRemoved = 0;
+  let nearDuplicatesMerged = 0;
 
   for (const op of operations) {
     if (!op.enabled) continue;
@@ -176,9 +237,22 @@ export function runCleaningPipeline(
       case 'remove_duplicates':
         stepResult = applyRemoveDuplicates(currentHeaders, currentRows, op.params);
         duplicatesRemoved += stepResult.removedRows.length;
+        if (stepResult.merges && stepResult.merges.length > 0) {
+          allMerges.push(...stepResult.merges);
+          nearDuplicatesMerged += stepResult.merges.reduce(
+            (acc, m) => acc + m.mergedRowNumbers.length,
+            0,
+          );
+        }
         break;
       case 'trim_whitespace':
         stepResult = applyTrimWhitespace(currentHeaders, currentRows, op.params);
+        break;
+      case 'placeholder_to_null':
+        stepResult = applyPlaceholderToNull(currentHeaders, currentRows, op.params);
+        break;
+      case 'canonicalize_coupons':
+        stepResult = applyCanonicalizeCoupons(currentHeaders, currentRows, op.params);
         break;
       case 'normalize_text':
         stepResult = applyNormalizeText(currentHeaders, currentRows, op.params, initialTypeMap);
@@ -196,6 +270,9 @@ export function runCleaningPipeline(
           op.params,
           initialTypeMap,
         );
+        break;
+      case 'validate_numbers':
+        stepResult = applyValidateNumbers(currentHeaders, currentRows, op.params, initialTypeMap);
         break;
       case 'handle_missing_values':
         stepResult = applyHandleMissingValues(currentHeaders, currentRows, op.params);
@@ -216,6 +293,7 @@ export function runCleaningPipeline(
     }
 
     allWarnings.push(...stepResult.warnings);
+    allIssues.push(...stepResult.issues);
     summaries.push({
       id: op.id,
       label: OPERATION_LABELS[op.id],
@@ -226,7 +304,22 @@ export function runCleaningPipeline(
     });
   }
 
-  const cleanedRows = currentRows.map((r) => r.cells);
+  const issueCountsByRule: Record<string, number> = {};
+  const flagsByRow = new Map<number, string[]>();
+  for (const issue of allIssues) {
+    issueCountsByRule[issue.rule_id] = (issueCountsByRule[issue.rule_id] ?? 0) + 1;
+    if (includeCleaningFlags && issue.column !== '*') {
+      const tag = `${issue.column}:${issue.rule_id}`;
+      const existing = flagsByRow.get(issue.row);
+      if (!existing) {
+        flagsByRow.set(issue.row, [tag]);
+      } else if (!existing.includes(tag)) {
+        existing.push(tag);
+      }
+    }
+  }
+
+  const baseCleanedRows = currentRows.map((r) => r.cells);
   const survivedByOriginalNumber = new Map<number, string[]>();
   for (const r of currentRows) {
     survivedByOriginalNumber.set(r.originalRowNumber, r.cells);
@@ -282,7 +375,7 @@ export function runCleaningPipeline(
     };
   });
 
-  // Re-inspect cleaned dataset for accurate after-cleaning quality score
+  // Re-inspect cleaned dataset (without _cleaning_flags metadata column) for accurate qualityAfter score
   const afterInspection = inspectParsedTable({
     filename: inspection.filename,
     byteSize: inspection.byteSize,
@@ -291,19 +384,34 @@ export function runCleaningPipeline(
     headers: currentHeaders,
     originalHeaders: currentHeaders,
     normalizedHeadersCount: 0,
-    rows: cleanedRows,
+    rows: baseCleanedRows,
   });
+
+  let exportHeaders = currentHeaders;
+  let exportRows = baseCleanedRows;
+  if (includeCleaningFlags) {
+    exportHeaders = [...currentHeaders, '_cleaning_flags'];
+    exportRows = currentRows.map((r) => {
+      const tags = flagsByRow.get(r.originalRowNumber);
+      return [...r.cells, tags ? tags.join(';') : ''];
+    });
+  }
 
   const postTypeMap: Record<string, ColumnType> = {};
   for (const col of afterInspection.columnProfiles) {
     postTypeMap[col.name] = col.detectedType;
   }
+  if (includeCleaningFlags) {
+    postTypeMap['_cleaning_flags'] = 'text';
+  }
 
-  const { csvOutput, formulaCellsEscaped } = exportRowsToCsv(currentHeaders, cleanedRows, {
+  const { csvOutput, formulaCellsEscaped } = exportRowsToCsv(exportHeaders, exportRows, {
     delimiter: outputDelimiter,
     formulaProtection,
     columnTypes: postTypeMap,
   });
+
+  const issuesCsvOutput = exportIssuesToCsv(allIssues, outputDelimiter);
 
   if (formulaProtection && formulaCellsEscaped > 0) {
     allWarnings.push({
@@ -327,14 +435,14 @@ export function runCleaningPipeline(
     encoding: inspection.encoding,
     delimiter: outputDelimiter,
     rowsBefore: inspection.rowCount,
-    rowsAfter: cleanedRows.length,
+    rowsAfter: exportRows.length,
     columnsBefore: inspection.columnCount,
-    columnsAfter: currentHeaders.length,
+    columnsAfter: exportHeaders.length,
     headersBefore: inspection.headers,
-    headersAfter: currentHeaders,
+    headersAfter: exportHeaders,
     operationsApplied: summaries,
     recordsChanged,
-    recordsRemoved: inspection.rowCount - cleanedRows.length,
+    recordsRemoved: inspection.rowCount - exportRows.length,
     duplicatesRemoved,
     emptyRowsRemoved,
     missingValuesFound,
@@ -344,14 +452,20 @@ export function runCleaningPipeline(
     warnings: deduplicateWarnings(allWarnings),
     qualityBefore: inspection.qualityBefore,
     qualityAfter: afterInspection.qualityBefore,
+    issues: allIssues,
+    issueCountsByRule,
+    merges: allMerges,
+    nearDuplicatesMerged,
+    includeCleaningFlags,
   };
 
   return {
-    headers: currentHeaders,
-    rows: cleanedRows,
+    headers: exportHeaders,
+    rows: exportRows,
     originalHeaders: inspection.headers,
     originalRows: inspection.rows,
     csvOutput,
+    issuesCsvOutput,
     report,
     diffRows,
   };

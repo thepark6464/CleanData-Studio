@@ -120,6 +120,9 @@ export class CleanDataApiClient {
     form.append('operations', JSON.stringify(params.operations));
     form.append('output_format', params.outputFormat);
     form.append('formula_protection', String(params.formulaProtection));
+    if (params.includeCleaningFlags !== undefined) {
+      form.append('include_cleaning_flags', String(params.includeCleaningFlags));
+    }
     if (params.delimiterOverride) {
       form.append('delimiter_override', params.delimiterOverride);
     }

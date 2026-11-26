@@ -4,6 +4,7 @@ import re
 import openpyxl
 import pandas as pd
 
+from app.models import CleaningIssue
 from app.utils.security import escape_formula_cell, is_formula_trigger
 
 
@@ -37,14 +38,34 @@ def export_dataframe_to_csv_bytes(
                 safe_row.append(s)
                 continue
             col_name = headers[idx] if idx < len(headers) else ""
-            is_num = column_types.get(col_name) in ("integer", "decimal")
-            safe_val, did_escape = escape_formula_cell(s, is_num)
+            ctype = column_types.get(col_name)
+            is_num = ctype in ("integer", "decimal")
+            is_phone = ctype == "phone"
+            safe_val, did_escape = escape_formula_cell(s, is_num, is_phone)
             if did_escape:
                 escaped_count += 1
             safe_row.append(safe_val)
         writer.writerow(safe_row)
 
     return buf.getvalue().encode("utf-8"), escaped_count
+
+
+def export_issues_to_csv_bytes(
+    issues: list[CleaningIssue], delimiter: str = ","
+) -> bytes:
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=delimiter, quotechar='"', lineterminator="\n")
+    writer.writerow(["row", "column", "original", "new", "rule_id", "severity"])
+    for issue in issues:
+        writer.writerow([
+            str(issue.row),
+            issue.column,
+            issue.original,
+            issue.new,
+            issue.rule_id,
+            issue.severity,
+        ])
+    return buf.getvalue().encode("utf-8")
 
 
 def export_dataframe_to_xlsx_bytes(
@@ -73,13 +94,15 @@ def export_dataframe_to_xlsx_bytes(
         for idx, val in enumerate(row):
             s = str(val)
             col_name = headers[idx] if idx < len(headers) else ""
-            is_num = column_types.get(col_name) in ("integer", "decimal")
+            ctype = column_types.get(col_name)
+            is_num = ctype in ("integer", "decimal")
+            is_phone = ctype == "phone"
             if is_num and re.match(r"^-?\d+(?:\.\d+)?$", s.strip()):
                 num = float(s.strip())
                 out_row.append(int(num) if num.is_integer() and "." not in s else num)
                 continue
             if formula_protection:
-                safe_val, did_escape = escape_formula_cell(s, is_num)
+                safe_val, did_escape = escape_formula_cell(s, is_num, is_phone)
                 if did_escape:
                     escaped_count += 1
                 out_row.append(safe_val)

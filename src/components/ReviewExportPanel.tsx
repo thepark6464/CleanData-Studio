@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
-import { AlertTriangle, CheckCircle2, Download, FileJson, FileSpreadsheet } from 'lucide-react';
 import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  FileJson,
+  FileSpreadsheet,
+  ListChecks,
+} from 'lucide-react';
+import {
+  exportIssuesToCsv,
   exportReportToJson,
   exportRowsToXlsxBlob,
   type CleaningResult,
@@ -32,8 +40,9 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
   result,
   columnTypes,
 }) => {
-  const [activeTab, setActiveTab] = useState<'cleaned' | 'diff' | 'report'>('cleaned');
+  const [activeTab, setActiveTab] = useState<'cleaned' | 'diff' | 'issues' | 'report'>('cleaned');
   const [diffFilter, setDiffFilter] = useState<'all' | 'modified' | 'removed'>('all');
+  const [issueRuleFilter, setIssueRuleFilter] = useState<string>('all');
   const [destructiveApproved, setDestructiveApproved] = useState(false);
 
   const { report, diffRows } = result;
@@ -41,11 +50,25 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
   const canDownloadCsv = !requiresApproval || destructiveApproved;
 
   const baseName = report.sourceFilename.replace(/\.[^/.]+$/, '') || 'dataset';
+  const issues = report.issues ?? [];
+  const issueCounts = report.issueCountsByRule ?? {};
+  const merges = report.merges ?? [];
+  const nearDupMerged = report.nearDuplicatesMerged ?? 0;
+  const exactDupsRemoved = Math.max(0, report.duplicatesRemoved - nearDupMerged);
+  const missingRuleRemoved = Math.max(
+    0,
+    report.recordsRemoved - report.emptyRowsRemoved - report.duplicatesRemoved,
+  );
 
   const filteredDiffRows = diffRows.filter((row) => {
     if (diffFilter === 'all') return row.status !== 'unchanged';
     return row.status === diffFilter;
   });
+
+  const filteredIssues =
+    issueRuleFilter === 'all'
+      ? issues
+      : issues.filter((item) => item.rule_id === issueRuleFilter);
 
   const previewCleanedRows = result.rows.slice(0, 100);
 
@@ -67,6 +90,8 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
               <span aria-hidden="true">·</span>
               <span>Removed: {report.recordsRemoved}</span>
               <span aria-hidden="true">·</span>
+              <span>Audit events: {issues.length.toLocaleString()}</span>
+              <span aria-hidden="true">·</span>
               <span>Formula-escaped cells: {report.formulaCellsEscaped}</span>
             </div>
           </div>
@@ -85,6 +110,21 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
             >
               <FileJson className="h-4 w-4" aria-hidden="true" />
               <span>Download Report JSON</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                triggerDownload(
+                  result.issuesCsvOutput ?? exportIssuesToCsv(issues),
+                  `issues_${baseName}.csv`,
+                  'text/csv;charset=utf-8',
+                )
+              }
+              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ListChecks className="h-4 w-4" aria-hidden="true" />
+              <span>Download Issues CSV</span>
             </button>
 
             <button
@@ -128,7 +168,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden="true" />
               <div className="space-y-2 text-xs text-amber-950">
                 <p className="font-semibold">
-                  Destructive change confirmation required ({report.recordsRemoved} row(s) removed: {report.emptyRowsRemoved} blank, {report.duplicatesRemoved} duplicate, {report.recordsRemoved - report.emptyRowsRemoved - report.duplicatesRemoved} missing-rule)
+                  Destructive change confirmation required ({report.recordsRemoved} row(s) removed: {report.emptyRowsRemoved} blank, {exactDupsRemoved} exact duplicate, {nearDupMerged} key-merged, {missingRuleRemoved} missing-rule)
                 </p>
                 <label className="inline-flex items-center gap-2 font-medium cursor-pointer">
                   <input
@@ -164,7 +204,7 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
 
         {/* Sub-tabs */}
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
-          <div className="inline-flex rounded-lg bg-slate-100 p-1" role="tablist">
+          <div className="inline-flex flex-wrap rounded-lg bg-slate-100 p-1" role="tablist">
             <button
               type="button"
               role="tab"
@@ -190,6 +230,19 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
               }`}
             >
               Before vs. After Diff ({diffRows.filter((d) => d.status !== 'unchanged').length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'issues'}
+              onClick={() => setActiveTab('issues')}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeTab === 'issues'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Audit Trail &amp; Merges ({issues.length.toLocaleString()})
             </button>
             <button
               type="button"
@@ -337,6 +390,148 @@ export const ReviewExportPanel: React.FC<ReviewExportPanelProps> = ({
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'issues' && (
+          <div className="mt-4 space-y-5">
+            {Object.keys(issueCounts).length > 0 && (
+              <div>
+                <h3 className="font-display text-xs font-semibold text-slate-900 mb-2">
+                  Counts by Rule
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIssueRuleFilter('all')}
+                    className={`rounded border px-2.5 py-1 font-mono text-xs cursor-pointer ${
+                      issueRuleFilter === 'all'
+                        ? 'border-blue-700 bg-blue-50 text-blue-900'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    all ({issues.length})
+                  </button>
+                  {Object.entries(issueCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([ruleId, count]) => (
+                      <button
+                        key={ruleId}
+                        type="button"
+                        onClick={() => setIssueRuleFilter(ruleId)}
+                        className={`rounded border px-2.5 py-1 font-mono text-xs cursor-pointer ${
+                          issueRuleFilter === ruleId
+                            ? 'border-blue-700 bg-blue-50 text-blue-900'
+                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {ruleId} ({count})
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {merges.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="font-display text-xs font-semibold text-slate-900">
+                  Key-Duplicate Merges &amp; Conflicts ({merges.length})
+                </h3>
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full border-collapse text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                      <tr>
+                        <th scope="col" className="px-3 py-2 font-semibold">Key</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Kept Row</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Merged Rows</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Blanks Filled</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Conflicts</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-mono">
+                      {merges.slice(0, 50).map((m, idx) => (
+                        <tr key={`${m.keyValue}-${idx}`}>
+                          <td className="px-3 py-2 text-slate-900">
+                            {m.keyColumns.join(',')}: {m.keyValue}
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">#{m.keptRowNumber}</td>
+                          <td className="px-3 py-2 text-slate-600">
+                            {m.mergedRowNumbers.map((n) => `#${n}`).join(', ')}
+                          </td>
+                          <td className="px-3 py-2 text-emerald-800">
+                            {m.filledColumns.length > 0 ? m.filledColumns.join(', ') : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-amber-800">
+                            {m.conflicts.length > 0
+                              ? m.conflicts
+                                  .map(
+                                    (c) =>
+                                      `${c.column} (kept "${c.keptValue}" vs "${c.conflictingValues.join('", "')}")`,
+                                  )
+                                  .join('; ')
+                              : 'None'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="overflow-x-auto rounded-lg border border-slate-200">
+              {filteredIssues.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-600">
+                  No cleaning issues or rule triggers recorded.
+                </div>
+              ) : (
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+                    <tr>
+                      <th scope="col" className="px-3 py-2 font-semibold">Row</th>
+                      <th scope="col" className="px-3 py-2 font-semibold">Column</th>
+                      <th scope="col" className="px-3 py-2 font-semibold">Rule</th>
+                      <th scope="col" className="px-3 py-2 font-semibold">Original</th>
+                      <th scope="col" className="px-3 py-2 font-semibold">New</th>
+                      <th scope="col" className="px-3 py-2 font-semibold">Severity</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {filteredIssues.slice(0, 150).map((item, idx) => (
+                      <tr key={`${item.row}-${item.column}-${item.rule_id}-${idx}`}>
+                        <td className="px-3 py-2 tabular-nums text-slate-500">#{item.row}</td>
+                        <td className="px-3 py-2 text-slate-800">{item.column}</td>
+                        <td className="px-3 py-2 text-slate-700">{item.rule_id}</td>
+                        <td className="max-w-[180px] truncate px-3 py-2 text-red-800">
+                          {item.original || '(empty)'}
+                        </td>
+                        <td className="max-w-[180px] truncate px-3 py-2 text-emerald-900">
+                          {item.new || '(empty)'}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={
+                              item.severity === 'warning'
+                                ? 'text-amber-700 font-semibold'
+                                : item.severity === 'error'
+                                ? 'text-red-700 font-semibold'
+                                : 'text-slate-600'
+                            }
+                          >
+                            {item.severity}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {filteredIssues.length > 150 && (
+              <p className="text-xs text-slate-500">
+                Showing first 150 of {filteredIssues.length.toLocaleString()} audit events. Use &ldquo;Download Issues CSV&rdquo; for the full reversible log.
+              </p>
             )}
           </div>
         )}

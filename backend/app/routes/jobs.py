@@ -20,6 +20,7 @@ from app.models import (
 from app.services.api_keys import ApiKeyService
 from app.services.credits import CreditService, estimate_credits_for_rows
 from app.services.pipeline import run_cleaning_pipeline
+from app.services.reports import export_issues_to_csv_bytes
 from app.services.storage import StoredJob
 from app.services.validators.file_validator import parse_upload_bytes
 from app.utils.security import (
@@ -35,10 +36,13 @@ ALLOWED_OPERATION_IDS = {
     "remove_empty_rows",
     "remove_duplicates",
     "trim_whitespace",
+    "placeholder_to_null",
+    "canonicalize_coupons",
     "normalize_text",
     "standardize_dates",
     "normalize_emails",
     "normalize_phone_numbers",
+    "validate_numbers",
     "handle_missing_values",
     "rename_columns",
 }
@@ -128,6 +132,7 @@ async def create_clean_job(
     operations: str | None = Form(default=None),
     output_format: OutputFormat = Form(default="csv"),
     formula_protection: bool = Form(default=True),
+    include_cleaning_flags: bool = Form(default=False),
     delimiter_override: str | None = Form(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> CleanJobCreateResponse:
@@ -243,6 +248,7 @@ async def create_clean_job(
             job_id=job_id,
             output_format=output_format,
             formula_protection=formula_protection,
+            include_cleaning_flags=include_cleaning_flags,
         )
         out_path, out_expires_at = storage.save_output_bytes(
             output_bytes, output_format=output_format, retention_days=settings.output_retention_days
@@ -396,6 +402,27 @@ async def get_job_report(request: Request, job_id: str) -> JobReportResponse:
     if not job.report:
         raise ApiServiceError(404, "REPORT_NOT_FOUND", f"Report for job '{job_id}' is not available.")
     return JobReportResponse(job_id=job_id, report=job.report)
+
+
+@router.get("/jobs/{job_id}/issues")
+async def get_job_issues_csv(request: Request, job_id: str) -> Response:
+    storage = request.app.state.storage
+    user = await resolve_optional_user(request)
+    job = storage.jobs.get(job_id)
+    if not job or not job.report:
+        raise ApiServiceError(404, "REPORT_NOT_FOUND", f"Issues report for job '{job_id}' is not available.")
+    _assert_job_access(job, user)
+    csv_bytes = export_issues_to_csv_bytes(job.report.issues, delimiter=job.report.delimiter or ",")
+    base_name = job.input_name.rsplit(".", 1)[0] or "dataset"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="issues_{base_name}.csv"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.get("/jobs/{job_id}/download", response_model=SignedDownloadResponse)

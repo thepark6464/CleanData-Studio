@@ -412,4 +412,229 @@ describe('CleanData Studio Browser CSV Engine (Phase 1)', () => {
   });
 });
 
+describe('CleanData Studio Production Cleaning Rules & Parity (Phase 5)', () => {
+  it('clears placeholder tokens to empty string and logs placeholder_to_null issues', () => {
+    const csv = [
+      'id,email,state,product,category,order_date',
+      '1,N/A,??,unknown,misc,not-a-date',
+      '2,null,-,NaN,None,valid@example.com',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'placeholders.csv');
+    const res = runCleaningPipeline(inspection, [
+      {
+        id: 'placeholder_to_null',
+        enabled: true,
+        params: {
+          columns: [],
+          tokens: ['n/a', 'na', 'null', 'none', 'nan', 'unknown', '??', '-', 'invalid-email', 'not-a-date', 'misc'],
+        },
+      },
+    ]);
+
+    expect(res.rows[0]).toEqual(['1', '', '', '', '', '']);
+    expect(res.rows[1]).toEqual(['2', '', '', '', '', 'valid@example.com']);
+    expect(res.report.issueCountsByRule?.placeholder_to_null).toBe(9);
+  });
+
+  it('rejects junk Indian phones (12345, 0000000000, 9999999999, 1234567890) and never formula-escapes valid +91 phones', () => {
+    const csv = [
+      'name,phone,notes',
+      'Asha,+91 98765 43210,Normal',
+      'Rohan,098765 43210,=CMD()',
+      'Bad1,12345,Test',
+      'Bad2,0000000000,Test',
+      'Bad3,9999999999,Test',
+      'Bad4,1234567890,Test',
+      'Bad5,+1+1 formula risk,Risk',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'junk_phones.csv');
+    const res = runCleaningPipeline(
+      inspection,
+      [
+        {
+          id: 'normalize_phone_numbers',
+          enabled: true,
+          params: { columns: ['phone'], defaultRegion: 'IN', format: 'E.164', clearInvalid: true },
+        },
+      ],
+      { formulaProtection: true },
+    );
+
+    expect(res.rows[0][1]).toBe('+919876543210');
+    expect(res.rows[1][1]).toBe('+919876543210');
+    expect(res.rows[2][1]).toBe('');
+    expect(res.rows[3][1]).toBe('');
+    expect(res.rows[4][1]).toBe('');
+    expect(res.rows[5][1]).toBe('');
+    expect(res.rows[6][1]).toBe('');
+    expect(res.report.issueCountsByRule?.phone_invalid_cleared).toBe(5);
+    expect(res.csvOutput).not.toContain("'+91");
+    expect(res.csvOutput).toContain("'=CMD()");
+  });
+
+  it('validates quantities and prices, clears sentinels/out-of-range values, and canonicalizes coupons', () => {
+    const csv = [
+      'order_id,quantity,price,coupon',
+      'O1,3,199.5,NONE',
+      'O2,-99,0,save10',
+      'O3,many,-999,',
+      'O4,2500,free,nil',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'orders_nums.csv');
+    const res = runCleaningPipeline(inspection, [
+      { id: 'canonicalize_coupons', enabled: true, params: { columns: ['coupon'], caseMode: 'upper' } },
+      { id: 'validate_numbers', enabled: true, params: { columns: [], defaultMaxQuantity: 1000, clearInvalid: true } },
+    ]);
+
+    expect(res.rows[0]).toEqual(['O1', '3', '199.50', '']);
+    expect(res.rows[1]).toEqual(['O2', '', '', 'SAVE10']);
+    expect(res.rows[2]).toEqual(['O3', '', '', '']);
+    expect(res.rows[3]).toEqual(['O4', '', '', '']);
+    expect(res.report.issueCountsByRule?.numeric_invalid_cleared).toBe(6);
+    expect(res.report.issueCountsByRule?.coupon_canonicalized).toBe(3);
+  });
+
+  it('merges canonical text variants while preserving short uppercase state codes and mixed-case notes', () => {
+    const csv = [
+      'city,state,notes',
+      'kochi,KL,VIP customer',
+      'Kochi,kl,vip customer',
+      'INDORE,MP,Standard',
+      'Indore,MP,standard',
+      'Indore,MP,Standard',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'text_merge.csv');
+    const res = runCleaningPipeline(inspection, [
+      {
+        id: 'normalize_text',
+        enabled: true,
+        params: { columns: [], caseMode: 'title', collapseWhitespace: true, canonicalMerge: true },
+      },
+    ]);
+
+    expect(res.rows[0]).toEqual(['Kochi', 'KL', 'VIP customer']);
+    expect(res.rows[1]).toEqual(['Kochi', 'KL', 'VIP customer']);
+    expect(res.rows[2]).toEqual(['Indore', 'MP', 'Standard']);
+  });
+
+  it('rejects impossible calendar dates and out-of-range years cleanly when clearInvalid is enabled', () => {
+    const csv = [
+      'id,order_date',
+      '1,32-13-2025',
+      '2,2025-02-30',
+      '3,1980-01-01',
+      '4,2099-01-01',
+      '5,15/03/2025',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'bad_dates.csv');
+    const res = runCleaningPipeline(inspection, [
+      {
+        id: 'standardize_dates',
+        enabled: true,
+        params: { columns: ['order_date'], dayFirst: true, outputFormat: 'YYYY-MM-DD', clearInvalid: true },
+      },
+    ]);
+
+    expect(res.rows.map((r) => r[1])).toEqual(['', '', '', '', '2025-03-15']);
+    expect(res.report.issueCountsByRule?.date_invalid_cleared).toBe(4);
+  });
+
+  it('normalizes before deduplication and merges near-duplicates with conflict reporting', () => {
+    const csv = [
+      'order_id,customer_name,email,city,product',
+      'ORD-1,  alice   sharma ,ALICE@EXAMPLE.COM,Kochi,Mouse',
+      'ORD-1,Alice Sharma,alice@example.com,Kochi,Mouse',
+      'ORD-2,Bob Nair,bob@example.com,,Keyboard',
+      'ORD-2,Bob Nair,bob@example.com,Indore,USB-C Hub',
+    ].join('\n');
+    const inspection = parseCsvBuffer(stringToArrayBuffer(csv), 'dedup_merge.csv');
+    const res = runCleaningPipeline(inspection, [
+      { id: 'trim_whitespace', enabled: true, params: { columns: [], collapseInternal: true } },
+      { id: 'normalize_emails', enabled: true, params: { columns: ['email'], clearInvalid: true } },
+      { id: 'normalize_text', enabled: true, params: { columns: ['customer_name', 'city', 'product'], caseMode: 'title', collapseWhitespace: true, canonicalMerge: true } },
+      { id: 'remove_duplicates', enabled: true, params: { keyColumns: [], keep: 'first', mergeNearDuplicates: true, mergeKeyColumns: ['order_id'] } },
+    ]);
+
+    expect(res.rows.length).toBe(2);
+    expect(res.rows[0]).toEqual(['ORD-1', 'Alice Sharma', 'alice@example.com', 'Kochi', 'Mouse']);
+    expect(res.rows[1]).toEqual(['ORD-2', 'Bob Nair', 'bob@example.com', 'Indore', 'USB-C Hub']);
+    expect(res.report.merges?.length).toBe(1);
+    expect(res.report.merges?.[0].conflicts.length).toBe(1);
+    expect(res.report.issueCountsByRule?.duplicate_exact_removed).toBe(1);
+    expect(res.report.issueCountsByRule?.duplicate_key_conflict).toBe(1);
+  });
+
+  it('matches the 300-row golden fixture expected output and is strictly idempotent with _cleaning_flags option', () => {
+    const buffer = readFixtureBuffer('customer_orders_300.csv');
+    const expectedCsv = fs.readFileSync(path.join(FIXTURES_DIR, 'customer_orders_300.expected.csv'), 'utf8');
+    const expectedJson = JSON.parse(
+      fs.readFileSync(path.join(FIXTURES_DIR, 'customer_orders_300.expected.json'), 'utf8'),
+    );
+
+    const inspection = parseCsvBuffer(buffer, 'customer_orders_300.csv');
+    const res1 = runCleaningPipeline(inspection, buildDefaultOperations(inspection), {
+      formulaProtection: true,
+    });
+
+    expect(res1.report.rowsBefore).toBe(expectedJson.rowsBefore);
+    expect(res1.report.rowsAfter).toBe(expectedJson.rowsAfter);
+    expect(res1.report.duplicatesRemoved).toBe(expectedJson.duplicatesRemoved);
+    expect(res1.report.nearDuplicatesMerged).toBe(expectedJson.nearDuplicatesMerged);
+    expect(res1.report.issueCountsByRule).toEqual(expectedJson.issueCountsByRule);
+    expect(res1.rows.slice(0, 5)).toEqual(expectedJson.firstFiveRows);
+    expect(res1.csvOutput).toBe(expectedCsv);
+    expect(res1.csvOutput).not.toContain("'+91");
+    expect(res1.issuesCsvOutput).toContain('row,column,original,new,rule_id,severity');
+
+    // Pass 2 idempotency: 0 issues and byte-identical CSV
+    const pass2Insp = parseCsvBuffer(stringToArrayBuffer(res1.csvOutput), 'customer_orders_300.csv');
+    const res2 = runCleaningPipeline(pass2Insp, buildDefaultOperations(pass2Insp), {
+      formulaProtection: true,
+    });
+    expect(res2.report.issues?.length ?? 0).toBe(0);
+    expect(res2.report.recordsChanged).toBe(0);
+    expect(res2.report.recordsRemoved).toBe(0);
+    expect(res2.csvOutput).toBe(res1.csvOutput);
+
+    // Optional _cleaning_flags column check
+    const flagged = runCleaningPipeline(inspection, buildDefaultOperations(inspection), {
+      formulaProtection: true,
+      includeCleaningFlags: true,
+    });
+    expect(flagged.headers[flagged.headers.length - 1]).toBe('_cleaning_flags');
+    expect(flagged.rows.some((r) => r[r.length - 1].includes('phone_invalid_cleared'))).toBe(true);
+  });
+
+  it('cleans 12,000 customer-order rows in under 2 seconds with zero apostrophe-corrupted phones', async () => {
+    const { generateSyntheticCustomerOrdersCsv, measureDefects } = await import(
+      '../../scripts/defect_scoreboard'
+    );
+    const rawCsv = generateSyntheticCustomerOrdersCsv(12000);
+    const buf = stringToArrayBuffer(rawCsv);
+
+    const inspection = parseCsvBuffer(buf, 'orders_12k.csv');
+    const start = performance.now();
+    const res = runCleaningPipeline(inspection, buildDefaultOperations(inspection), {
+      formulaProtection: true,
+    });
+    const elapsedCleanMs = performance.now() - start;
+
+    const after = measureDefects(res.headers, res.rows, res.csvOutput, res.report.qualityAfter.score);
+    expect(res.report.rowsBefore).toBe(12000);
+    expect(res.report.rowsAfter).toBe(11880);
+    expect(after.placeholders).toBe(0);
+    expect(after.invalidEmails).toBe(0);
+    expect(after.invalidOrJunkPhones).toBe(0);
+    expect(after.apostrophePhones).toBe(0);
+    expect(after.invalidDates).toBe(0);
+    expect(after.invalidQuantities).toBe(0);
+    expect(after.invalidPrices).toBe(0);
+    expect(after.couponNoneTokens).toBe(0);
+    expect(after.exactDuplicateRows).toBe(0);
+    expect(res.report.qualityAfter.score).toBeGreaterThan(res.report.qualityBefore.score);
+    expect(elapsedCleanMs).toBeLessThan(2000);
+  });
+});
+
+
 

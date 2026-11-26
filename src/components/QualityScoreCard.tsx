@@ -24,6 +24,13 @@ export const QualityScoreCard: React.FC<QualityScoreCardProps> = ({
       ? 'text-amber-700'
       : 'text-red-700';
 
+  const hasPassMetrics =
+    breakdown.passingCells !== undefined && breakdown.totalCells > 0;
+  const passPct =
+    breakdown.validationPassRate !== undefined
+      ? Math.round(breakdown.validationPassRate * 1000) / 10
+      : breakdown.score;
+
   const components = [
     {
       label: 'Missing cells',
@@ -33,7 +40,7 @@ export const QualityScoreCard: React.FC<QualityScoreCardProps> = ({
       penalty: Math.round(30 * breakdown.missingRate * 10) / 10,
     },
     {
-      label: 'Invalid syntax / dates',
+      label: 'Invalid syntax / dates / numbers',
       weight: '30 pts',
       rate: breakdown.invalidRate,
       countText: `${breakdown.invalidCount} / ${breakdown.totalCells} cells`,
@@ -61,7 +68,9 @@ export const QualityScoreCard: React.FC<QualityScoreCardProps> = ({
         <div>
           <h3 className="font-display text-sm font-semibold text-slate-900">{title}</h3>
           <p className="mt-0.5 text-xs text-slate-500">
-            Transparent weighted formula (0–100)
+            {hasPassMetrics
+              ? `Measured passing cells: ${breakdown.passingCells?.toLocaleString()} / ${breakdown.totalCells.toLocaleString()} (${passPct}%)`
+              : 'Measured validation & deduplication score (0–100)'}
           </p>
         </div>
         <div className="text-right">

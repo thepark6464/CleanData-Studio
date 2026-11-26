@@ -15,10 +15,13 @@ export type OperationId =
   | 'remove_empty_rows'
   | 'remove_duplicates'
   | 'trim_whitespace'
+  | 'placeholder_to_null'
+  | 'canonicalize_coupons'
   | 'normalize_text'
   | 'standardize_dates'
   | 'normalize_emails'
   | 'normalize_phone_numbers'
+  | 'validate_numbers'
   | 'handle_missing_values'
   | 'rename_columns';
 
@@ -45,39 +48,99 @@ export type MissingStrategy =
   | 'fill_median'
   | 'fill_zero';
 export type ColumnRenameConvention = 'snake_case' | 'camelCase' | 'lowercase' | 'custom';
+export type NumericRuleMode =
+  | 'positive_integer'
+  | 'positive_decimal'
+  | 'non_negative_decimal'
+  | 'integer'
+  | 'decimal';
 
 export interface ColumnMissingRule {
   strategy: MissingStrategy;
   constantValue?: string;
 }
 
+export interface NumericColumnRule {
+  mode: NumericRuleMode;
+  min?: number;
+  max?: number;
+  decimals?: number;
+  sentinels?: string[];
+}
+
+export interface CleaningIssue {
+  row: number; // 1-indexed original data row
+  column: string;
+  original: string;
+  new: string;
+  rule_id: string;
+  severity: 'info' | 'warning' | 'error';
+}
+
+export interface NearDuplicateMergeConflict {
+  column: string;
+  keptValue: string;
+  conflictingValues: string[];
+}
+
+export interface NearDuplicateMergeRecord {
+  keyColumns: string[];
+  keyValue: string;
+  keptRowNumber: number;
+  mergedRowNumbers: number[];
+  filledColumns: string[];
+  conflicts: NearDuplicateMergeConflict[];
+}
+
 export type OperationParamsMap = {
   remove_empty_rows: Record<string, never>;
   remove_duplicates: {
-    keyColumns: string[]; // empty array = all columns
+    keyColumns: string[]; // empty array = all columns for exact dedup
     keep: 'first' | 'last';
+    mergeNearDuplicates?: boolean;
+    mergeKeyColumns?: string[];
   };
   trim_whitespace: {
     columns: string[]; // empty array = all columns
     collapseInternal: boolean;
   };
+  placeholder_to_null: {
+    columns: string[]; // empty array = all columns except excluded
+    tokens: string[]; // case-insensitive trimmed tokens to convert to ""
+    excludeColumns?: string[];
+  };
+  canonicalize_coupons: {
+    columns: string[]; // empty array = coupon/promo columns
+    emptyTokens?: string[];
+    caseMode?: 'upper' | 'preserve';
+  };
   normalize_text: {
     columns: string[]; // empty array = all text/mixed columns
     caseMode: TextCaseMode;
     collapseWhitespace: boolean;
+    canonicalMerge?: boolean;
   };
   standardize_dates: {
     columns: string[]; // empty array = detected date columns
     dayFirst: boolean;
     outputFormat: DateOutputFormat;
+    clearInvalid?: boolean;
   };
   normalize_emails: {
     columns: string[]; // empty array = detected email columns
+    clearInvalid?: boolean;
   };
   normalize_phone_numbers: {
     columns: string[]; // empty array = detected phone columns
     defaultRegion: SupportedPhoneRegion;
     format: PhoneOutputFormat;
+    clearInvalid?: boolean;
+  };
+  validate_numbers: {
+    columns: string[]; // empty array = auto-detect quantity/price columns or explicit rules
+    rules?: Record<string, NumericColumnRule>;
+    defaultMaxQuantity?: number;
+    clearInvalid?: boolean;
   };
   handle_missing_values: {
     strategies: Record<string, ColumnMissingRule>;
@@ -138,6 +201,9 @@ export interface QualityScoreBreakdown {
   totalCells: number;
   totalRows: number;
   formulaDescription: string;
+  passingCells?: number;
+  failingCells?: number;
+  validationPassRate?: number;
 }
 
 export interface DatasetInspection {
@@ -202,6 +268,11 @@ export interface CleaningReport {
   warnings: CleaningWarning[];
   qualityBefore: QualityScoreBreakdown;
   qualityAfter: QualityScoreBreakdown;
+  issues?: CleaningIssue[];
+  issueCountsByRule?: Record<string, number>;
+  merges?: NearDuplicateMergeRecord[];
+  nearDuplicatesMerged?: number;
+  includeCleaningFlags?: boolean;
 }
 
 export interface DiffCellChange {
@@ -226,6 +297,7 @@ export interface CleaningResult {
   originalHeaders: string[];
   originalRows: string[][];
   csvOutput: string;
+  issuesCsvOutput?: string;
   report: CleaningReport;
   diffRows: DiffRow[];
 }

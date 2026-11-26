@@ -3,12 +3,53 @@ import type {
   ColumnProfile,
   ColumnType,
   DateOutputFormat,
+  NumericColumnRule,
   PhoneOutputFormat,
   QualityScoreBreakdown,
   SupportedPhoneRegion,
 } from './types';
 
-export const MISSING_TOKENS = new Set(['', 'na', 'n/a', 'null', 'nan', 'none']);
+export const MISSING_TOKENS = new Set([
+  '',
+  'na',
+  'n/a',
+  'null',
+  'nan',
+  'none',
+  'unknown',
+  '??',
+  '-',
+  'invalid-email',
+  'not-a-date',
+  'misc',
+]);
+
+export const DEFAULT_PLACEHOLDER_TOKENS = [
+  'n/a',
+  'na',
+  'null',
+  'none',
+  'nan',
+  'unknown',
+  '??',
+  '-',
+  'invalid-email',
+  'not-a-date',
+  'misc',
+];
+
+export const COUPON_EMPTY_TOKENS = new Set([
+  '',
+  'none',
+  'na',
+  'n/a',
+  'null',
+  'nan',
+  'nil',
+  'no coupon',
+  'no_coupon',
+  '-',
+]);
 
 export const SUPPORTED_PHONE_REGIONS: Array<{ code: SupportedPhoneRegion; label: string }> = [
   { code: 'IN', label: 'India (+91)' },
@@ -30,6 +71,18 @@ const INTEGER_REGEX = /^[+-]?\d+$/;
 const DECIMAL_REGEX = /^[+-]?(?:\d+\.\d+|\d+\.|\.\d+)$/;
 const BOOLEAN_VALUES = new Set(['true', 'false', 'yes', 'no', '1', '0', 'y', 'n']);
 const PHONE_LOOSE_REGEX = /^\+?[\d\s().-]{7,20}$/;
+const E164_SAFE_REGEX = /^\+[1-9]\d{6,14}$/;
+
+const ASCENDING_SEQUENTIAL = new Set([
+  '0123456',
+  '1234567',
+  '01234567',
+  '12345678',
+  '012345678',
+  '123456789',
+  '0123456789',
+  '1234567890',
+]);
 
 const MONTH_NAMES: Record<string, number> = {
   jan: 1,
@@ -62,12 +115,113 @@ export function isMissingValue(value: string): boolean {
   return MISSING_TOKENS.has(value.trim().toLowerCase());
 }
 
+export function isPlaceholderValue(value: string, tokens: string[] | Set<string>): boolean {
+  const norm = value.trim().toLowerCase();
+  if (!norm) return false;
+  if (tokens instanceof Set) return tokens.has(norm);
+  return tokens.includes(norm);
+}
+
+export function isCouponHeader(header: string): boolean {
+  return /\b(coupon|promo|voucher)(?:_code)?\b/i.test(header) || /coupon|promo|voucher/i.test(header);
+}
+
+export function isQuantityHeader(header: string): boolean {
+  const h = header.trim().toLowerCase();
+  return /^(qty|quantity|units|item_qty|order_qty)$/.test(h) || /\b(qty|quantity)\b/.test(h);
+}
+
+export function isPriceHeader(header: string): boolean {
+  const h = header.trim().toLowerCase();
+  return /^(price|unit_price|item_price|mrp|unit_cost|selling_price)$/.test(h) || /\b(unit_price|item_price|price|mrp)\b/.test(h);
+}
+
+export function defaultNumericRuleForHeader(header: string): NumericColumnRule | null {
+  if (isQuantityHeader(header)) {
+    return {
+      mode: 'positive_integer',
+      min: 1,
+      max: 1000,
+      sentinels: ['-99', '-999'],
+    };
+  }
+  if (isPriceHeader(header)) {
+    return {
+      mode: 'positive_decimal',
+      min: 0.000001,
+      decimals: 2,
+      sentinels: ['-99', '-999'],
+    };
+  }
+  return null;
+}
+
+export function validateNumericValue(
+  raw: string,
+  rule: NumericColumnRule,
+): { valid: boolean; formatted: string; numericValue?: number } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { valid: false, formatted: raw };
+
+  const sentinels = rule.sentinels ?? ['-99', '-999'];
+  if (sentinels.includes(trimmed)) {
+    return { valid: false, formatted: raw };
+  }
+
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
+    return { valid: false, formatted: raw };
+  }
+
+  const num = Number(trimmed);
+  if (!Number.isFinite(num)) {
+    return { valid: false, formatted: raw };
+  }
+
+  if (rule.mode === 'positive_integer' || rule.mode === 'integer') {
+    if (!Number.isInteger(num)) {
+      return { valid: false, formatted: raw };
+    }
+    if (rule.mode === 'positive_integer' && num <= 0) {
+      return { valid: false, formatted: raw };
+    }
+  } else if (rule.mode === 'positive_decimal' && num <= 0) {
+    return { valid: false, formatted: raw };
+  } else if (rule.mode === 'non_negative_decimal' && num < 0) {
+    return { valid: false, formatted: raw };
+  }
+
+  if (rule.min !== undefined && num < rule.min) {
+    return { valid: false, formatted: raw };
+  }
+  if (rule.max !== undefined && num > rule.max) {
+    return { valid: false, formatted: raw };
+  }
+
+  if (rule.mode === 'positive_integer' || rule.mode === 'integer') {
+    return { valid: true, formatted: String(Math.trunc(num)), numericValue: num };
+  }
+
+  const decimals = rule.decimals ?? (rule.mode === 'positive_decimal' ? 2 : undefined);
+  const formatted = decimals !== undefined ? num.toFixed(decimals) : String(num);
+  return { valid: true, formatted, numericValue: num };
+}
+
 export function isValidEmailSyntax(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > 254) return false;
   if (trimmed.includes('..')) return false;
   return EMAIL_REGEX.test(trimmed);
 }
+
+export function isJunkPhoneDigits(nationalDigits: string, region: SupportedPhoneRegion): boolean {
+  if (!nationalDigits) return true;
+  if (/^(\d)\1+$/.test(nationalDigits)) return true;
+  if (ASCENDING_SEQUENTIAL.has(nationalDigits)) return true;
+  if (region === 'IN' && nationalDigits.length !== 10) return true;
+  return false;
+}
+
+const phoneValidationCache = new Map<string, { valid: boolean; formatted: string }>();
 
 export function validateAndFormatPhone(
   raw: string,
@@ -77,28 +231,70 @@ export function validateAndFormatPhone(
   const trimmed = raw.trim();
   if (!trimmed) return { valid: false, formatted: raw };
 
+  const cacheKey = `${region}|${outputFormat}|${trimmed}`;
+  const cached = phoneValidationCache.get(cacheKey);
+  if (cached) return cached;
+
   const parsed = parsePhoneNumberFromString(trimmed, region as CountryCode);
   if (!parsed || !parsed.isValid()) {
-    return { valid: false, formatted: raw };
+    const res = { valid: false, formatted: raw };
+    if (phoneValidationCache.size < 25000) phoneValidationCache.set(cacheKey, res);
+    return res;
   }
 
+  const natDigits = String(parsed.nationalNumber ?? '').replace(/\D/g, '');
+  if (isJunkPhoneDigits(natDigits, (parsed.country as SupportedPhoneRegion | undefined) ?? region)) {
+    const res = { valid: false, formatted: raw };
+    if (phoneValidationCache.size < 25000) phoneValidationCache.set(cacheKey, res);
+    return res;
+  }
+
+  let formatted: string;
   if (outputFormat === 'INTERNATIONAL') {
-    return { valid: true, formatted: parsed.formatInternational() };
+    formatted = parsed.formatInternational();
+  } else if (outputFormat === 'NATIONAL') {
+    formatted = parsed.formatNational();
+  } else {
+    formatted = parsed.number;
   }
-  if (outputFormat === 'NATIONAL') {
-    return { valid: true, formatted: parsed.formatNational() };
-  }
-  return { valid: true, formatted: parsed.number };
+
+  const res = { valid: true, formatted };
+  if (phoneValidationCache.size < 25000) phoneValidationCache.set(cacheKey, res);
+  return res;
 }
 
-export function isFormulaTrigger(value: string): boolean {
+const exportPhoneLiteralCache = new Map<string, boolean>();
+
+export function isValidPhoneLiteralForExport(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('+')) return false;
+  if (E164_SAFE_REGEX.test(trimmed)) return true;
+  const cached = exportPhoneLiteralCache.get(trimmed);
+  if (cached !== undefined) return cached;
+  let valid = false;
+  if (/^\+[1-9][\d\s().-]{6,19}\d$/.test(trimmed) && !trimmed.slice(1).includes('+')) {
+    const parsed = parsePhoneNumberFromString(trimmed);
+    valid = Boolean(parsed && parsed.isValid());
+  }
+  if (exportPhoneLiteralCache.size < 25000) {
+    exportPhoneLiteralCache.set(trimmed, valid);
+  }
+  return valid;
+}
+
+export function isFormulaTrigger(value: string, isNumericColumn = false): boolean {
   if (!value) return false;
   const first = value.charAt(0);
-  if (first === '=' || first === '+' || first === '@' || first === '\t' || first === '\r') {
+  if (first === '=' || first === '@' || first === '\t' || first === '\r') {
+    return true;
+  }
+  if (first === '+') {
+    if (isValidPhoneLiteralForExport(value)) return false;
+    if (isNumericColumn && /^\+\d+(?:\.\d+)?$/.test(value.trim())) return false;
     return true;
   }
   if (first === '-') {
-    return !/^-?\d+(?:\.\d+)?$/.test(value);
+    return !/^-?\d+(?:\.\d+)?$/.test(value.trim());
   }
   return false;
 }
@@ -112,16 +308,20 @@ export interface ParsedDateResult {
   formatted?: string;
 }
 
+const DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const CURRENT_MAX_ALLOWED_DATE_YEAR = Math.max(2026, new Date().getFullYear()) + 1;
+
+export function getMaxAllowedDateYear(): number {
+  return Math.max(CURRENT_MAX_ALLOWED_DATE_YEAR, new Date().getFullYear() + 1);
+}
+
 function isValidCalendarDate(year: number, month: number, day: number): boolean {
-  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) {
+  if (year < 1990 || year > CURRENT_MAX_ALLOWED_DATE_YEAR || month < 1 || month > 12 || day < 1) {
     return false;
   }
-  const dt = new Date(Date.UTC(year, month - 1, day));
-  return (
-    dt.getUTCFullYear() === year &&
-    dt.getUTCMonth() === month - 1 &&
-    dt.getUTCDate() === day
-  );
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const maxDay = month === 2 && isLeap ? 29 : DAYS_IN_MONTH[month];
+  return day <= maxDay;
 }
 
 export function formatDateParts(
@@ -260,7 +460,7 @@ export function classifyCellType(
     if (isValidEmailSyntax(t) || t.includes('@')) return 'email';
   }
 
-  if (parseDateValue(t, true).valid || (hint.includes('date') && looksLikeDateCandidate(t))) {
+  if (looksLikeDateCandidate(t) && (parseDateValue(t, true).valid || hint.includes('date'))) {
     return 'date';
   }
 
@@ -330,8 +530,15 @@ export function inferColumnType(values: string[], headerName: string): {
   };
 
   const hint = headerName.toLowerCase();
+  const isCouponCol = isCouponHeader(headerName);
+  const numericRule = defaultNumericRuleForHeader(headerName);
 
   for (const val of values) {
+    const trimmed = val.trim();
+    if (isCouponCol && trimmed === '') {
+      // Blank coupon is valid "no coupon" state
+      continue;
+    }
     if (isMissingValue(val)) {
       missingCount++;
       continue;
@@ -339,20 +546,11 @@ export function inferColumnType(values: string[], headerName: string): {
     nonEmptyCount++;
     const cellType = classifyCellType(val, hint);
     counts[cellType]++;
-
-    if (cellType === 'date') {
-      const parsed = parseDateValue(val, true);
-      if (!parsed.valid) {
-        invalidCount++;
-      } else if (parsed.ambiguous) {
-        ambiguousDateCount++;
-      }
-    }
   }
 
   if (nonEmptyCount === 0) {
     return {
-      detectedType: 'empty',
+      detectedType: isCouponCol ? 'text' : 'empty',
       nonEmptyCount: 0,
       missingCount,
       invalidCount: 0,
@@ -420,14 +618,41 @@ export function inferColumnType(values: string[], headerName: string): {
     invalidCount = 0;
     for (const val of values) {
       if (isMissingValue(val)) continue;
-      // If value starts with '+' try parsing international; otherwise check loose digit bounds (region-specific happens in explicit normalize step)
       const trimmed = val.trim();
       if (trimmed.startsWith('+')) {
-        const parsed = parsePhoneNumberFromString(trimmed);
-        if (!parsed || !parsed.isValid()) invalidCount++;
+        if (!E164_SAFE_REGEX.test(trimmed) || isJunkPhoneDigits(trimmed.slice(-10), 'IN')) {
+          const parsed = parsePhoneNumberFromString(trimmed);
+          const nat = String(parsed?.nationalNumber ?? '').replace(/\D/g, '');
+          const region = (parsed?.country as SupportedPhoneRegion | undefined) ?? 'IN';
+          if (!parsed || !parsed.isValid() || isJunkPhoneDigits(nat, region)) {
+            invalidCount++;
+          }
+        }
       } else {
         const digits = trimmed.replace(/\D/g, '');
-        if (digits.length < 7 || digits.length > 15) invalidCount++;
+        if (digits.length < 7 || digits.length > 15 || isJunkPhoneDigits(digits.slice(-10), 'IN')) {
+          invalidCount++;
+        }
+      }
+    }
+    typeInconsistentCount = invalidCount;
+  } else if (numericRule) {
+    detectedType = numericRule.mode === 'positive_integer' ? 'integer' : 'decimal';
+    invalidCount = 0;
+    for (const val of values) {
+      if (isMissingValue(val)) continue;
+      if (!validateNumericValue(val, numericRule).valid) {
+        invalidCount++;
+      }
+    }
+    typeInconsistentCount = invalidCount;
+  } else if (isCouponCol) {
+    detectedType = 'text';
+    invalidCount = 0;
+    for (const val of values) {
+      const trimmed = val.trim();
+      if (trimmed !== '' && COUPON_EMPTY_TOKENS.has(trimmed.toLowerCase())) {
+        invalidCount++;
       }
     }
     typeInconsistentCount = invalidCount;
@@ -459,6 +684,7 @@ export function computeQualityScore(
 
   const missingCount = columnProfiles.reduce((acc, col) => acc + col.missingCount, 0);
   const invalidCount = columnProfiles.reduce((acc, col) => acc + col.invalidCount, 0);
+  const whitespaceIssues = columnProfiles.reduce((acc, col) => acc + col.whitespaceIssueCount, 0);
 
   if (totalRows === 0 || totalCells === 0) {
     return {
@@ -473,8 +699,11 @@ export function computeQualityScore(
       typeInconsistentCount: 0,
       totalCells: 0,
       totalRows: 0,
+      passingCells: 0,
+      failingCells: 0,
+      validationPassRate: 1,
       formulaDescription:
-        'score = clamp(100 - (30 * missing_rate + 30 * invalid_rate + 25 * duplicate_rate + 15 * type_inconsistency_rate), 0, 100)',
+        'score = round(100 * (passing_cells / total_cells), 1) (share of cells passing all validation & deduplication rules)',
     };
   }
 
@@ -484,14 +713,16 @@ export function computeQualityScore(
   const populatedCells = Math.max(1, totalCells - missingCount);
   const typeInconsistencyRate = Math.min(1, typeInconsistentCount / populatedCells);
 
-  const rawScore =
-    100 -
-    (30 * missingRate +
-      30 * invalidRate +
-      25 * duplicateRate +
-      15 * typeInconsistencyRate);
+  // Measured share of cells passing all validation, hygiene, and deduplication checks
+  const duplicateCells = duplicateRowCount * totalCols;
+  const failingCells = Math.min(
+    totalCells,
+    missingCount + invalidCount + whitespaceIssues + duplicateCells,
+  );
+  const passingCells = Math.max(0, totalCells - failingCells);
+  const validationPassRate = passingCells / totalCells;
 
-  const score = Math.round(Math.max(0, Math.min(100, rawScore)) * 10) / 10;
+  const score = Math.round(Math.max(0, Math.min(100, validationPassRate * 100)) * 10) / 10;
 
   return {
     score,
@@ -505,7 +736,10 @@ export function computeQualityScore(
     typeInconsistentCount,
     totalCells,
     totalRows,
+    passingCells,
+    failingCells,
+    validationPassRate,
     formulaDescription:
-      'score = clamp(100 - (30 * missing_rate + 30 * invalid_rate + 25 * duplicate_rate + 15 * type_inconsistency_rate), 0, 100)',
+      'score = round(100 * (passing_cells / total_cells), 1) (share of cells passing all validation & deduplication rules)',
   };
 }

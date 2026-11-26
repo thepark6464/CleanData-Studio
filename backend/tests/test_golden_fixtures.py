@@ -151,3 +151,78 @@ def test_pipe_delimiter_and_phone_and_xlsx_roundtrip():
     reparsed_xlsx = parse_upload_bytes(xlsx_bytes, "cleaned.xlsx", _settings())
     assert reparsed_xlsx.input_format == "xlsx"
     assert reparsed_xlsx.df.iloc[0]["phone"] == "+919876543210"
+
+
+def test_production_rules_and_300_row_golden_parity():
+    raw = (FIXTURES_DIR / "customer_orders_300.csv").read_bytes()
+    expected_csv = (FIXTURES_DIR / "customer_orders_300.expected.csv").read_text("utf-8")
+    expected_json = json.loads((FIXTURES_DIR / "customer_orders_300.expected.json").read_text("utf-8"))
+
+    dataset = parse_upload_bytes(raw, "customer_orders_300.csv", _settings())
+    ops = [
+        OperationRequest(id="remove_empty_rows", enabled=True),
+        OperationRequest(id="trim_whitespace", enabled=True, params={"columns": [], "collapseInternal": True}),
+        OperationRequest(id="canonicalize_coupons", enabled=True, params={"columns": [], "caseMode": "upper"}),
+        OperationRequest(
+            id="placeholder_to_null",
+            enabled=True,
+            params={
+                "columns": [],
+                "tokens": [
+                    "n/a", "na", "null", "none", "nan", "unknown",
+                    "??", "-", "invalid-email", "not-a-date", "misc",
+                ],
+                "excludeColumns": ["_cleaning_flags"],
+            },
+        ),
+        OperationRequest(id="normalize_emails", enabled=True, params={"columns": [], "clearInvalid": True}),
+        OperationRequest(
+            id="normalize_phone_numbers",
+            enabled=True,
+            params={"columns": [], "defaultRegion": "IN", "format": "E.164", "clearInvalid": True},
+        ),
+        OperationRequest(
+            id="standardize_dates",
+            enabled=True,
+            params={"columns": [], "dayFirst": True, "outputFormat": "YYYY-MM-DD", "clearInvalid": True},
+        ),
+        OperationRequest(
+            id="validate_numbers",
+            enabled=True,
+            params={"columns": [], "defaultMaxQuantity": 1000, "clearInvalid": True},
+        ),
+        OperationRequest(
+            id="normalize_text",
+            enabled=True,
+            params={"columns": [], "caseMode": "title", "collapseWhitespace": True, "canonicalMerge": True},
+        ),
+        OperationRequest(
+            id="remove_duplicates",
+            enabled=True,
+            params={"keyColumns": [], "keep": "first", "mergeNearDuplicates": True, "mergeKeyColumns": ["order_id"]},
+        ),
+    ]
+
+    cleaned_df, output_bytes, report = run_cleaning_pipeline(
+        dataset, ops, job_id="golden_300", output_format="csv", formula_protection=True
+    )
+    csv_text = output_bytes.decode("utf-8")
+
+    assert report.rowsBefore == expected_json["rowsBefore"]
+    assert report.rowsAfter == expected_json["rowsAfter"]
+    assert report.duplicatesRemoved == expected_json["duplicatesRemoved"]
+    assert report.nearDuplicatesMerged == expected_json["nearDuplicatesMerged"]
+    assert report.issueCountsByRule == expected_json["issueCountsByRule"]
+    assert "'+91" not in csv_text
+    assert csv_text == expected_csv
+    assert len(cleaned_df) == expected_json["rowsAfter"]
+
+    # Pass 2 idempotency
+    pass2_ds = parse_upload_bytes(output_bytes, "customer_orders_300.csv", _settings())
+    _, pass2_bytes, pass2_rep = run_cleaning_pipeline(
+        pass2_ds, ops, job_id="golden_300_pass2", output_format="csv", formula_protection=True
+    )
+    assert len(pass2_rep.issues) == 0
+    assert pass2_rep.recordsChanged == 0
+    assert pass2_bytes.decode("utf-8") == csv_text
+

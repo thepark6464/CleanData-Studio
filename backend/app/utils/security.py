@@ -63,25 +63,61 @@ def log_event(event: str, request_id: str, **meta: Any) -> None:
 
 
 
-def is_formula_trigger(value: str) -> bool:
-    if not value:
+_E164_PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+_INTL_PHONE_LITERAL_RE = re.compile(r"^\+[1-9][\d\s().-]{6,19}\d$")
+
+
+def is_valid_phone_literal_for_export(value: str) -> bool:
+    trimmed = value.strip()
+    if not trimmed.startswith("+"):
         return False
-    first = value[0]
-    if first in ("=", "+", "@", "\t", "\r"):
+    if _E164_PHONE_RE.match(trimmed):
         return True
-    if first == "-":
-        return not bool(re.match(r"^-?\d+(?:\.\d+)?$", value))
+    if _INTL_PHONE_LITERAL_RE.match(trimmed) and "+" not in trimmed[1:]:
+        digits = re.sub(r"\D", "", trimmed)
+        return 7 <= len(digits) <= 15
     return False
 
 
-def escape_formula_cell(value: str, is_numeric_column: bool) -> tuple[str, bool]:
+def is_formula_trigger(value: str, is_numeric_column: bool = False) -> bool:
+    if not value:
+        return False
+    first = value[0]
+    if first in ("=", "@", "\t", "\r"):
+        return True
+    if first == "+":
+        if is_valid_phone_literal_for_export(value):
+            return False
+        if is_numeric_column and re.match(r"^\+\d+(?:\.\d+)?$", value.strip()):
+            return False
+        return True
+    if first == "-":
+        return not bool(re.match(r"^-?\d+(?:\.\d+)?$", value.strip()))
+    return False
+
+
+def escape_formula_cell(
+    value: str, is_numeric_column: bool, is_phone_column: bool = False
+) -> tuple[str, bool]:
     if not value:
         return value, False
     first = value[0]
-    if first in ("=", "+", "@", "\t", "\r"):
+    if first in ("=", "@", "\t", "\r"):
+        return f"'{value}", True
+    if first == "+":
+        if is_valid_phone_literal_for_export(value):
+            return value, False
+        if (
+            is_phone_column
+            and re.match(r"^\+[1-9][\d\s().-]{6,19}$", value.strip())
+            and "+" not in value.strip()[1:]
+        ):
+            return value, False
+        if is_numeric_column and re.match(r"^\+\d+(?:\.\d+)?$", value.strip()):
+            return value, False
         return f"'{value}", True
     if first == "-":
-        if is_numeric_column and re.match(r"^-?\d+(?:\.\d+)?$", value):
+        if is_numeric_column and re.match(r"^-?\d+(?:\.\d+)?$", value.strip()):
             return value, False
         return f"'{value}", True
     return value, False
